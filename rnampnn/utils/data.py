@@ -1,0 +1,157 @@
+from Bio import SeqIO
+from torch.utils.data import Dataset
+from pytorch_lightning import LightningDataModule
+import pandas as pd
+from ..config import *
+from tqdm import tqdm
+from ..config import DATA_PATH
+
+def read_fasta_biopython(file_path):
+    sequences = {}
+    for record in SeqIO.parse(file_path, "fasta"):
+        sequences[record.id] = str(record.seq)
+    return sequences
+
+def gen_dataframe(file_path=DATA_PATH+'seqs/'):
+    train_file_list = os.listdir(file_path)
+    content_dict = {
+        "pdb_id": [],
+        "seq": []
+    }
+
+    for file in tqdm(train_file_list):
+        sequences = read_fasta_biopython(file_path + file)
+        content_dict["pdb_id"].append(list(sequences.keys())[0])
+        content_dict["seq"].append(list(sequences.values())[0])
+
+    return pd.DataFrame(content_dict)
+
+def split_dataset(data, output_dir=DATA_PATH, split_ratio=SPLIT_RATIO):
+
+    split = np.random.choice(['train', 'valid', 'test'], size=len(data), p=split_ratio)
+    data['split'] = split
+    train_data = data[data['split'] == 'train']
+    valid_data = data[data['split'] == 'valid']
+    test_data = data[data['split'] == 'test']
+    train_data.to_csv(output_dir + "train_data.csv", index=False)
+    valid_data.to_csv(output_dir + "valid_data.csv", index=False)
+    test_data.to_csv(output_dir + "test_data.csv", index=False)
+
+class RNADataset(Dataset):
+    def __init__(self, data_path, npy_dir):
+        super(RNADataset, self).__init__()
+        self.data = pd.read_csv(data_path)
+        self.npy_dir = npy_dir
+        self.seq_list = self.data['seq'].to_list()
+        self.name_list = self.data['pdb_id'].to_list()
+
+    def __len__(self):
+        return len(self.name_list)
+
+    def __getitem__(self, idx):
+        seq = self.seq_list[idx]
+        pdb_id = self.name_list[idx]
+        coords = np.load(os.path.join(self.npy_dir, pdb_id + '.npy'))
+
+        feature = {
+            "name": pdb_id,
+            "seq": seq,
+            "coords": {
+                "P": coords[:, 0, :],
+                "O5'": coords[:, 1, :],
+                "C5'": coords[:, 2, :],
+                "C4'": coords[:, 3, :],
+                "C3'": coords[:, 4, :],
+                "O3'": coords[:, 5, :],
+            }
+        }
+
+        return feature
+
+def featurize(batch):
+    alphabet = 'AUCG'
+    B = len(batch)
+    lengths = np.array([len(b['seq']) for b in batch], dtype=np.int32)
+    L_max = max([len(b['seq']) for b in batch])
+    X = np.zeros([B, L_max, 6, 3])
+    S = np.zeros([B, L_max], dtype=np.int32)
+    names = []
+
+    # Build the batch
+    for i, b in enumerate(batch):
+        x = np.stack([np.nan_to_num(b['coords'][c], nan=0.0) for c in ["P", "O5'", "C5'", "C4'", "C3'", "O3'"]], 1)
+        l = len(b['seq'])
+        x_pad = np.pad(x, [[0, L_max - l], [0, 0], [0, 0]], 'constant', constant_values=(np.nan,))
+        X[i, :, :, :] = x_pad
+        indices = np.asarray([alphabet.index(a) for a in b['seq']], dtype=np.int32)
+        S[i, :l] = indices
+        names.append(b['name'])
+
+    mask = np.isfinite(np.sum(X, (2, 3))).astype(np.float32)
+    numbers = np.sum(mask, axis=1).astype(np.int32)
+    S_new = np.zeros_like(S)
+    X_new = np.zeros_like(X) + np.nan
+    for i, n in enumerate(numbers):
+        X_new[i, :n, ::] = X[i][mask[i] == 1]
+        S_new[i, :n] = S[i][mask[i] == 1]
+
+    X = X_new
+    S = S_new
+    isnan = np.isnan(X)
+    mask = np.isfinite(np.sum(X, (2, 3))).astype(np.float32)
+    X[isnan] = 0.
+    S = torch.from_numpy(S).to(dtype=torch.long)
+    X = torch.from_numpy(X).to(dtype=torch.float32)
+    mask = torch.from_numpy(mask).to(dtype=torch.float32)
+    return X, S, mask, lengths, names
+
+class RNADataModule(LightningDataModule):
+
+    @classmethod
+    def from_defaults(cls):
+        split_dataset(gen_dataframe())
+        return cls(
+            train_data_path=DATA_PATH + 'train_data.csv',
+            valid_data_path=DATA_PATH + 'valid_data.csv',
+            test_data_path=DATA_PATH + 'test_data.csv',
+            train_npy_dir='./data/coords',
+            valid_npy_dir='./data/coords',
+            test_npy_dir='./data/coords',
+            batch_size=16
+        )
+
+    def __init__(self, train_data_path, valid_data_path, test_data_path, train_npy_dir, valid_npy_dir, test_npy_dir, batch_size=32):
+        super().__init__()
+        self.train_data_path = train_data_path
+        self.valid_data_path = valid_data_path
+        self.test_data_path = test_data_path
+        self.train_npy_dir = train_npy_dir
+        self.valid_npy_dir = valid_npy_dir
+        self.test_npy_dir = test_npy_dir
+        self.batch_size = batch_size
+
+    def setup(self, stage=None):
+        if stage == 'fit' or stage is None:
+            self.train_dataset = RNADataset(self.train_data_path, self.train_npy_dir)
+            self.valid_dataset = RNADataset(self.valid_data_path, self.valid_npy_dir)
+
+        if stage == 'test' or stage is None:
+            self.test_dataset = RNADataset(self.test_data_path, self.test_npy_dir)
+
+    def train_dataloader(self):
+        return torch.utils.data.DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=19, shuffle=True, persistent_workers=True, collate_fn=featurize)
+
+    def val_dataloader(self):
+        return torch.utils.data.DataLoader(self.valid_dataset, batch_size=self.batch_size, num_workers=19, shuffle=False, persistent_workers=True, collate_fn=featurize)
+
+    def test_dataloader(self):
+        return torch.utils.data.DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=19, shuffle=False, persistent_workers=True, collate_fn=featurize)
+
+def nan_to_num(tensor, nan=0.0):
+    idx = torch.isnan(tensor)
+    tensor[idx] = nan
+    return tensor
+
+def normalize(tensor, dim=-1):
+    return nan_to_num(
+        torch.div(tensor, torch.norm(tensor, dim=dim, keepdim=True)))

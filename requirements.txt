@@ -1,1 +1,6 @@
 numpy~=1.26.4
+torch~=2.6.0+cu126
+biopython~=1.78
+pytorch-lightning~=2.4.0
+pandas~=2.2.3
+tqdm~=4.67.1
