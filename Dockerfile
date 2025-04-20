@@ -1,9 +1,9 @@
-FROM  registry.cn-shanghai.aliyuncs.com/tcc_public/python:3.10
+FROM  pytorchlightning/pytorch_lightning
 LABEL authors="Huazhi Wang"
 
 ADD . /app
 WORKDIR /app
-RUN cd /app
-RUN pip install -r ./requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-CMD ["python", "main.py"]
+RUN cd /app \
+    && pip install -r ./requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple \
+CMD ["sh", "/app/run.sh"]
 ENTRYPOINT ["top", "-b"]
