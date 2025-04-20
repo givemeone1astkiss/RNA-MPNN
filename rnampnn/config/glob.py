@@ -19,3 +19,6 @@ FEAT_DIMS = {
 }
 
 SPLIT_RATIO = [0.9, 0.1, 0.0]
+
+COMPETITION_DATA = '/saisdata/'
+COMPETITION_OUT = '/saisresult/'

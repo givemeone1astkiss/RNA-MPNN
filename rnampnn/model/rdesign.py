@@ -5,10 +5,11 @@ from torch_scatter import scatter_sum
 import numpy as np
 import torch.nn.functional as F
 from typing_extensions import final
-
+import os
 from ..config import FEAT_DIMS
 from ..utils import normalize
 import pytorch_lightning as pl
+from tqdm import tqdm
 
 class MPNNLayer(nn.Module):
     def __init__(self, num_hidden, num_in, dropout=0.1, scale=30):
@@ -435,3 +436,31 @@ class RNAModel(pl.LightningModule):
         valid_recovery = np.mean(recovery_list)
         self.log('test_recovery_rate', valid_recovery, prog_bar=True, sync_dist=True)
         return {'test_loss': loss, 'test_recovery_rate': valid_recovery}
+
+    def predict(self, batch, batch_id, output_dir, output_file="submit.csv"):
+        self.eval()
+        X, S, mask, lengths, pdb_ids = batch
+        X = X.to(self.device)
+        S = S.to(self.device)
+        mask = mask.to(self.device)
+
+        logits, _ = self.sample(X, S, mask)
+        probs = F.softmax(logits, dim=-1)
+        samples = probs.argmax(dim=-1)
+        start_idx = 0
+        sequences = []
+        for length, pdb_id in tqdm(zip(lengths, pdb_ids), total=len(pdb_ids), desc="Predicting"):
+            end_idx = start_idx + length.item()
+            sample = samples[start_idx:end_idx]
+            seq = ''.join(['AUCG'[i] for i in sample.tolist()])
+            sequences.append((pdb_id, seq))
+            start_idx = end_idx
+
+        # Write to CSV
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, output_file)
+        with open(output_path, 'a') as f:
+            if batch_id == 0:
+                f.write("pdb_id,seq\n")
+            for pdb_id, seq in sequences:
+                f.write(f"{pdb_id},{seq}\n")
