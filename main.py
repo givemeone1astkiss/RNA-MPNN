@@ -5,4 +5,4 @@ if __name__ == "__main__":
     model = RNAModel.load_from_checkpoint('out/checkpoints/RDesign/checkpoint-epoch=29.ckpt')
 
     # Predict using the model
-    predict(model, batch_size=32)
+    predict(model, batch_size=8)
