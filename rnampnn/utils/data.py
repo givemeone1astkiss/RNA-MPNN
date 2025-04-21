@@ -1,4 +1,7 @@
+from typing import final
+
 from Bio import SeqIO
+from sqlalchemy.sql.coercions import expect
 from torch.utils.data import Dataset
 from pytorch_lightning import LightningDataModule
 import pandas as pd
@@ -19,10 +22,18 @@ def gen_dataframe(file_path=DATA_PATH+'seqs/'):
         "seq": []
     }
 
-    for file in tqdm(train_file_list):
+    for file in tqdm(train_file_list, desc="Reading files", unit="file"):
         sequences = read_fasta_biopython(file_path + file)
-        content_dict["pdb_id"].append(list(sequences.keys())[0])
-        content_dict["seq"].append(list(sequences.values())[0])
+        try:
+            content_dict["pdb_id"].append(list(sequences.keys())[0])
+        except IndexError:
+            print(f"Error reading file {file}: {sequences}")
+            continue
+        try:
+            content_dict["seq"].append(list(sequences.values())[0])
+        except IndexError:
+            print(f"Error reading file {file}: {sequences}")
+            continue
 
     return pd.DataFrame(content_dict)
 
@@ -105,6 +116,7 @@ def featurize(batch):
     mask = torch.from_numpy(mask).to(dtype=torch.float32)
     return X, S, mask, lengths, names
 
+@final
 class RNADataModule(LightningDataModule):
 
     @classmethod

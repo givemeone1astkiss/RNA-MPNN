@@ -449,7 +449,7 @@ class RNAModel(pl.LightningModule):
         samples = probs.argmax(dim=-1)
         start_idx = 0
         sequences = []
-        for length, pdb_id in tqdm(zip(lengths, pdb_ids), total=len(pdb_ids), desc="Predicting"):
+        for length, pdb_id in zip(lengths, pdb_ids):
             end_idx = start_idx + length.item()
             sample = samples[start_idx:end_idx]
             seq = ''.join(['AUCG'[i] for i in sample.tolist()])
