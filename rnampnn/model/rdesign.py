@@ -437,7 +437,7 @@ class RNAModel(pl.LightningModule):
         self.log('test_recovery_rate', valid_recovery, prog_bar=True, sync_dist=True)
         return {'test_loss': loss, 'test_recovery_rate': valid_recovery}
 
-    def predict(self, batch, batch_id, output_dir, output_file="submit.csv"):
+    def predict(self, batch, batch_id, output_dir, filename):
         self.eval()
         X, S, mask, lengths, pdb_ids = batch
         X = X.to(self.device)
@@ -458,7 +458,7 @@ class RNAModel(pl.LightningModule):
 
         # Write to CSV
         os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, output_file)
+        output_path = os.path.join(output_dir, filename)
         with open(output_path, 'a') as f:
             if batch_id == 0:
                 f.write("pdb_id,seq\n")
