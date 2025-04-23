@@ -6,4 +6,9 @@ if __name__ == "__main__":
     model = RNAModel.load_from_checkpoint('out/checkpoints/RDesign/checkpoint-epoch=59-1.ckpt')
 
     # Predict using the model
-    predict(model, batch_size=4)
+    try:
+        predict(model, batch_size=4)
+    except torch.OutOfMemoryError:
+        predict(model, batch_size=2)
+    finally:
+        predict(model, batch_size=1)
