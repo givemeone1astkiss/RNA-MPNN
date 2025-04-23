@@ -118,8 +118,8 @@ def featurize(batch):
 class RNADataModule(LightningDataModule):
 
     @classmethod
-    def from_defaults(cls):
-        split_dataset(gen_dataframe())
+    def from_defaults(cls, batch_size=16, split_ratio=SPLIT_RATIO):
+        split_dataset(gen_dataframe(), split_ratio=split_ratio)
         return cls(
             train_data_path=DATA_PATH + 'train_data.csv',
             valid_data_path=DATA_PATH + 'valid_data.csv',
@@ -127,7 +127,7 @@ class RNADataModule(LightningDataModule):
             train_npy_dir='./data/coords',
             valid_npy_dir='./data/coords',
             test_npy_dir='./data/coords',
-            batch_size=16
+            batch_size=batch_size
         )
 
     def __init__(self, train_data_path, valid_data_path, test_data_path, train_npy_dir, valid_npy_dir, test_npy_dir, batch_size=32):
