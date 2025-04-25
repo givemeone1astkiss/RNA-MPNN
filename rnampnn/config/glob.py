@@ -22,3 +22,5 @@ SPLIT_RATIO = [0.9, 0.1, 0.0]
 
 COMPETITION_DATA = '/saisdata/'
 COMPETITION_OUT = '/saisresult/'
+
+BEST_CKPT = 'out/checkpoints/RDesign/checkpoint-epoch=59-1.ckpt'

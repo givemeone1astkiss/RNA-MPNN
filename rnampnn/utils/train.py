@@ -1,5 +1,5 @@
 import pytorch_lightning as pl
-from ..config import OUTPUT_PATH
+from ..config.glob import OUTPUT_PATH
 from pytorch_lightning.callbacks import ModelCheckpoint
 import torch
 

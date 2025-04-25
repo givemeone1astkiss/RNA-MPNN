@@ -3,9 +3,11 @@ from Bio import SeqIO
 from torch.utils.data import Dataset
 from pytorch_lightning import LightningDataModule
 import pandas as pd
-from ..config import *
+import numpy as np
+import os
 from tqdm import tqdm
-from ..config import DATA_PATH
+from ..config.glob import DATA_PATH, SPLIT_RATIO
+import torch
 
 def read_fasta_biopython(file_path):
     sequences = {}
