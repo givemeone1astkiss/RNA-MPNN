@@ -1,0 +1,14 @@
+dropout: 0.1
+edge_feat_types:
+- orientation
+- distance
+- direction
+hidden_dim: 128
+k_neighbors: 40
+lr: 0.001
+node_feat_types:
+- angle
+- distance
+- direction
+num_mpnn_layers: 9
+vocab_size: 4
