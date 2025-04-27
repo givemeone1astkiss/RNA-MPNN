@@ -24,7 +24,6 @@ class MPNNLayer(nn.Module):
         W1 (nn.Linear): Linear transformation for edge features.
         W2 (nn.Linear): Linear transformation for intermediate features.
         W3 (nn.Linear): Linear transformation for message features.
-        act (nn.ReLU): Activation function.
         dense (nn.Sequential): Feedforward network for node updates.
     """
     def __init__(self, num_hidden, num_in, dropout=0.1, scale=30):
@@ -37,7 +36,7 @@ class MPNNLayer(nn.Module):
             dropout (float): Dropout rate for regularization.
             scale (int): Scaling factor for message aggregation.
         """
-        super(MPNNLayer, self).__init__()
+        super().__init__()
         self.num_hidden = num_hidden
         self.num_in = num_in
         self.scale = scale
@@ -48,11 +47,10 @@ class MPNNLayer(nn.Module):
         self.W1 = nn.Linear(num_hidden + num_in, num_hidden, bias=True)
         self.W2 = nn.Linear(num_hidden, num_hidden, bias=True)
         self.W3 = nn.Linear(num_hidden, num_hidden, bias=True)
-        self.act = nn.ReLU()
 
         self.dense = nn.Sequential(
             nn.Linear(num_hidden, num_hidden * 4),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(num_hidden * 4, num_hidden)
         )
 
@@ -69,7 +67,7 @@ class MPNNLayer(nn.Module):
             torch.Tensor: Updated node features of shape (num_nodes, num_hidden).
         """
         src_idx, _ = edge_idx[0], edge_idx[1]
-        h_message = self.W3(self.act(self.W2(self.act(self.W1(h_E)))))
+        h_message = self.W3(F.gelu(self.W2(F.gelu(self.W1(h_E)))))
         dh = scatter_sum(h_message, src_idx, dim=0) / self.scale
         h_V = self.norm1(h_V + self.dropout(dh))
         dh = self.dense(h_V)
@@ -78,7 +76,7 @@ class MPNNLayer(nn.Module):
 
 class Normalize(nn.Module):
     def __init__(self, features, epsilon=1e-6):
-        super(Normalize, self).__init__()
+        super().__init__()
         self.gain = nn.Parameter(torch.ones(features))
         self.bias = nn.Parameter(torch.zeros(features))
         self.epsilon = epsilon
@@ -97,39 +95,10 @@ class Normalize(nn.Module):
 
 
 class RNAFeatures(nn.Module):
-    """
-    Extracts RNA features for graph-based learning.
-
-    Attributes:
-        edge_features (int): Number of edge features.
-        node_features (int): Number of node features.
-        node_feat_types (list): Types of node features to include.
-        edge_feat_types (list): Types of edge features to include.
-        num_rbf (int): Number of radial basis function (RBF) features.
-        top_k (int): Number of nearest neighbors to consider.
-        augment_eps (float): Epsilon value for data augmentation.
-        dropout (nn.Dropout): Dropout layer for regularization.
-        node_embedding (nn.Linear): Linear layer for node feature embedding.
-        edge_embedding (nn.Linear): Linear layer for edge feature embedding.
-        norm_nodes (Normalize): Normalization layer for node features.
-        norm_edges (Normalize): Normalization layer for edge features.
-    """
     def __init__(self, edge_features, node_features, node_feat_types=[], edge_feat_types=[], num_rbf=16, top_k=30,
                  augment_eps=0., dropout=0.1):
-        """
-        Initializes the RNAFeatures module.
-
-        Args:
-            edge_features (int): Number of edge features.
-            node_features (int): Number of node features.
-            node_feat_types (list): Types of node features to include.
-            edge_feat_types (list): Types of edge features to include.
-            num_rbf (int): Number of radial basis function (RBF) features.
-            top_k (int): Number of nearest neighbors to consider.
-            augment_eps (float): Epsilon value for data augmentation.
-            dropout (float): Dropout rate for regularization.
-        """
-        super().__init__()
+        super(RNAFeatures, self).__init__()
+        """Extract RNA Features"""
         self.edge_features = edge_features
         self.node_features = node_features
         self.top_k = top_k
@@ -148,16 +117,6 @@ class RNAFeatures(nn.Module):
 
     @staticmethod
     def _gather_nodes(nodes, neighbor_idx):
-        """
-        Gathers node features for neighbors.
-
-        Args:
-            nodes (torch.Tensor): Node features.
-            neighbor_idx (torch.Tensor): Indices of neighbors.
-
-        Returns:
-            torch.Tensor: Neighbor features.
-        """
         neighbors_flat = neighbor_idx.view((neighbor_idx.shape[0], -1))
         neighbors_flat = neighbors_flat.unsqueeze(-1).expand(-1, -1, nodes.size(2))
         neighbor_features = torch.gather(nodes, 1, neighbors_flat)
@@ -166,31 +125,10 @@ class RNAFeatures(nn.Module):
 
     @staticmethod
     def _gather_edges(edges, neighbor_idx):
-        """
-        Gathers edge features for neighbors.
-
-        Args:
-            edges (torch.Tensor): Edge features.
-            neighbor_idx (torch.Tensor): Indices of neighbors.
-
-        Returns:
-            torch.Tensor: Neighbor edge features.
-        """
         neighbors = neighbor_idx.unsqueeze(-1).expand(-1, -1, -1, edges.size(-1))
         return torch.gather(edges, 2, neighbors)
 
     def _dist(self, X, mask, eps=1E-6):
-        """
-        Computes pairwise distances and selects top-k neighbors.
-
-        Args:
-            X (torch.Tensor): Input coordinates.
-            mask (torch.Tensor): Mask for valid entries.
-            eps (float): Small value to avoid division by zero.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Distances and indices of top-k neighbors.
-        """
         mask_2D = torch.unsqueeze(mask, 1) * torch.unsqueeze(mask, 2)
         dX = torch.unsqueeze(X, 1) - torch.unsqueeze(X, 2)
         D = (1. - mask_2D) * 10000 + mask_2D * torch.sqrt(torch.sum(dX ** 2, 3) + eps)
@@ -201,17 +139,6 @@ class RNAFeatures(nn.Module):
         return D_neighbors, E_idx
 
     def _rbf(self, D):
-        """
-        Computes pairwise distances and selects top-k neighbors.
-
-        Args:
-            X (torch.Tensor): Input coordinates.
-            mask (torch.Tensor): Mask for valid entries.
-            eps (float): Small value to avoid division by zero.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Distances and indices of top-k neighbors.
-        """
         D_min, D_max, D_count = 0., 20., self.num_rbf
         D_mu = torch.linspace(D_min, D_max, D_count, device=D.device)
         D_mu = D_mu.view([1, 1, 1, -1])
@@ -220,18 +147,6 @@ class RNAFeatures(nn.Module):
         return torch.exp(-((D_expand - D_mu) / D_sigma) ** 2)
 
     def _get_rbf(self, A, B, E_idx=None, num_rbf=16):
-        """
-        Computes the radial basis function (RBF) between two sets of points.
-
-        Args:
-            A (torch.Tensor): First set of points.
-            B (torch.Tensor): Second set of points.
-            E_idx (torch.Tensor, optional): Indices of neighbors.
-            num_rbf (int): Number of RBF features.
-
-        Returns:
-            torch.Tensor: RBF features.
-        """
         if E_idx is not None:
             D_A_B = torch.sqrt(torch.sum((A[:, :, None, :] - B[:, None, :, :]) ** 2, -1) + 1e-6)
             D_A_B_neighbors = self._gather_edges(D_A_B[:, :, :, None], E_idx)[:, :, :, 0]
@@ -242,13 +157,6 @@ class RNAFeatures(nn.Module):
         return RBF_A_B
 
     def _quaternions(self, R):
-        """
-        Computes quaternions from rotation matrices.
-        Args:
-            R (torch.Tensor): Rotation matrices of shape (B, N, 3, 3).
-        Returns:
-            torch.Tensor: Quaternions of shape (B, N, 4).
-        """
         diag = torch.diagonal(R, dim1=-2, dim2=-1)
         Rxx, Ryy, Rzz = diag.unbind(-1)
         magnitudes = 0.5 * torch.sqrt(torch.abs(1 + torch.stack([
@@ -269,19 +177,6 @@ class RNAFeatures(nn.Module):
         return Q
 
     def _orientations_coarse(self, X, E_idx, eps=1e-6):
-        """
-        Computes orientations and directions for RNA backbone.
-
-        Args:
-            X (torch.Tensor): Input coordinates of shape (B, N, 6, 3).
-            E_idx (torch.Tensor): Indices of neighbors.
-            eps (float): Small value to avoid division by zero.
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            V_direct (torch.Tensor): Direct orientations of shape (B, N, 6).
-            E_direct (torch.Tensor): Edge orientations of shape (B, N, 30).
-            E_orient (torch.Tensor): Edge orientations of shape (B, N, 30).
-        """
         V = X.clone()
         X = X[:, :, :6, :].reshape(X.shape[0], 6 * X.shape[1], 3)
         dX = X[:, 1:, :] - X[:, :-1, :]
@@ -326,15 +221,6 @@ class RNAFeatures(nn.Module):
         return V_direct, E_direct, E_orient
 
     def _dihedrals(self, X, eps=1e-7):
-        """
-        Computes dihedral angles between consecutive atoms in the RNA backbone.
-        Args:
-            X (torch.Tensor): Input coordinates of shape (B, N, 6, 3).
-            eps (float): Small value to avoid division by zero.
-        Returns:
-            torch.Tensor: Dihedral angles of shape (B, N, 6).
-        """
-        
         # P, O5', C5', C4', C3', O3'
         X = X[:, :, :6, :].reshape(X.shape[0], 6 * X.shape[1], 3)
 
@@ -357,18 +243,6 @@ class RNAFeatures(nn.Module):
         return torch.cat((torch.cos(D), torch.sin(D)), 2)  # return D_features
 
     def forward(self, X, S, mask):
-        """
-        Forward pass for RNA feature extraction.
-
-        Args:
-            X (torch.Tensor): Input coordinates.
-            S (torch.Tensor): Sequence information.
-            mask (torch.Tensor): Mask for valid entries.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            Extracted features and graph structure.
-        """
         if self.training and self.augment_eps > 0:
             X = X + self.augment_eps * torch.randn_like(X)
 
@@ -391,8 +265,11 @@ class RNAFeatures(nn.Module):
         edge_mask_select = lambda x: torch.masked_select(x, mask_attend.unsqueeze(-1)).reshape(-1, x.shape[-1])
         node_mask_select = lambda x: torch.masked_select(x, mask_bool.unsqueeze(-1)).reshape(-1, x.shape[-1])
 
+        # node features
         h_V = []
+        # angle
         V_angle = node_mask_select(self._dihedrals(X))
+        # distance
         node_list = ['O5_-P', 'C5_-P', 'C4_-P', 'C3_-P', 'O3_-P']
         V_dist = []
 
@@ -401,11 +278,14 @@ class RNAFeatures(nn.Module):
             V_dist.append(node_mask_select(
                 self._get_rbf(vars()['atom_' + atom1], vars()['atom_' + atom2], None, self.num_rbf).squeeze()))
         V_dist = torch.cat(tuple(V_dist), dim=-1).squeeze()
+        # direction
         V_direct, E_direct, E_orient = self._orientations_coarse(X, E_idx)
         V_direct = node_mask_select(V_direct)
         E_direct, E_orient = list(map(lambda x: edge_mask_select(x), [E_direct, E_orient]))
 
+        # edge features
         h_E = []
+        # dist
         edge_list = ['P-P', 'O5_-P', 'C5_-P', 'C4_-P', 'C3_-P', 'O3_-P']
         E_dist = []
         for pair in edge_list:
@@ -428,9 +308,11 @@ class RNAFeatures(nn.Module):
         if 'direction' in self.edge_feat_types:
             h_E.append(E_direct)
 
+        # Embed the nodes
         h_V = self.norm_nodes(self.node_embedding(torch.cat(h_V, dim=-1)))
         h_E = self.norm_edges(self.edge_embedding(torch.cat(h_E, dim=-1)))
 
+        # prepare the variables to return
         S = torch.masked_select(S, mask_bool)
         shift = mask.sum(dim=1).cumsum(dim=0) - mask.sum(dim=1)
         src = shift.view(B, 1, 1) + E_idx
@@ -460,27 +342,25 @@ class RNAModel(pl.LightningModule):
         lr (float): Learning rate.
     """
     def __init__(self,
-                hidden: int = 256,
+                hidden_dim: int = 128,
                 vocab_size: int = 4,
-                k_neighbors: int = 30,
+                k_neighbors: int = 40,
                 dropout: float = 0.1,
                 node_feat_types=None,
                 edge_feat_types=None,
-                num_encoder_layers: int = 4,
-                num_decoder_layers: int = 4,
+                num_mpnn_layers: int = 8,
                 lr: float = 0.001
                 ):
         """
         Initializes the RNAModel.
         Args:
-            hidden (int): Number of hidden units.
+            hidden_dim (int): Number of hidden units.
             vocab_size (int): Size of the vocabulary.
             k_neighbors (int): Number of nearest neighbors.
             dropout (float): Dropout rate.
             node_feat_types (list): Types of node features to include.
             edge_feat_types (list): Types of edge features to include.
-            num_encoder_layers (int): Number of encoder layers.
-            num_decoder_layers (int): Number of decoder layers.
+            num_mpnn_layers (int): Number of mpnn layers.
             lr (float): Learning rate.
         """
         super().__init__()
@@ -490,25 +370,21 @@ class RNAModel(pl.LightningModule):
         if node_feat_types is None:
             node_feat_types = ['angle', 'distance', 'direction']
         self.save_hyperparameters()
-        self.node_features = self.edge_features = hidden
-        self.hidden_dim = hidden
+        self.node_features = self.edge_features = hidden_dim
+        self.hidden_dim = hidden_dim
         self.vocab = vocab_size
 
         self.features = RNAFeatures(
-            hidden, hidden,
+            hidden_dim, hidden_dim,
             top_k=k_neighbors,
             dropout=dropout,
             node_feat_types=node_feat_types,
             edge_feat_types=edge_feat_types,
         )
 
-        layer = MPNNLayer
-        self.encoder_layers = nn.ModuleList([
-            layer(self.hidden_dim, self.hidden_dim*2, dropout=dropout)
-            for _ in range(num_encoder_layers)])
-        self.decoder_layers = nn.ModuleList([
-            layer(self.hidden_dim, self.hidden_dim*2, dropout=dropout)
-            for _ in range(num_decoder_layers)])
+        self.mpnn_layers = nn.ModuleList([
+            MPNNLayer(self.hidden_dim, self.hidden_dim*2, dropout=dropout)
+            for _ in range(num_mpnn_layers)])
 
         self.readout = nn.Linear(self.hidden_dim, vocab_size, bias=True)
         self.loss_fn = nn.CrossEntropyLoss()
@@ -516,45 +392,17 @@ class RNAModel(pl.LightningModule):
 
     def forward(self, X, S, mask):
         X, S, h_V, h_E, E_idx, batch_id = self.features(X, S, mask)
-        for enc_layer in self.encoder_layers:
+        for layer in self.mpnn_layers:
             h_EV = torch.cat([h_E, h_V[E_idx[0]], h_V[E_idx[1]]], dim=-1)
-            h_V = enc_layer(h_V, h_EV, E_idx)
-
-        for dec_layer in self.decoder_layers:
-            h_EV = torch.cat([h_E, h_V[E_idx[0]], h_V[E_idx[1]]], dim=-1)
-            h_V = dec_layer(h_V, h_EV, E_idx)
-
-        graph_embs = []
-        for b_id in range(batch_id[-1].item()+1):
-            b_data = h_V[batch_id == b_id].mean(0)
-            graph_embs.append(b_data)
-        graph_embs = torch.stack(graph_embs, dim=0)
-
+            h_V = layer(h_V, h_EV, E_idx)
         logits = self.readout(h_V)
         return logits, S
 
     def sample(self, X, S, mask=None):
-        """
-        Sample the model to generate sequences.
-
-        Args:
-            X (torch.Tensor): Input coordinates.
-            S (torch.Tensor): Sequence information.
-            mask (torch.Tensor, optional): Mask for valid entries.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Logits and ground truth sequences.
-        """
         X, gt_S, h_V, h_E, E_idx, _ = self.features(X, S, mask)
-
-        for enc_layer in self.encoder_layers:
+        for layer in self.mpnn_layers:
             h_EV = torch.cat([h_E, h_V[E_idx[0]], h_V[E_idx[1]]], dim=-1)
-            h_V = enc_layer(h_V, h_EV, E_idx)
-
-        for dec_layer in self.decoder_layers:
-            h_EV = torch.cat([h_E, h_V[E_idx[0]], h_V[E_idx[1]]], dim=-1)
-            h_V = dec_layer(h_V, h_EV, E_idx)
-
+            h_V = layer(h_V, h_EV, E_idx)
         logits = self.readout(h_V)
         return logits, gt_S
 
@@ -582,11 +430,9 @@ class RNAModel(pl.LightningModule):
         X = X.to(self.device)
         S = S.to(self.device)
         mask = mask.to(self.device)
-
         logits, S = self(X, S, mask)
         loss = self.loss_fn(logits, S)
         self.log('val_loss', loss, prog_bar=True, sync_dist=True)
-
         probs = F.softmax(logits, dim=-1)
         samples = probs.argmax(dim=-1)
 
