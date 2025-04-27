@@ -97,7 +97,7 @@ class Normalize(nn.Module):
 class RNAFeatures(nn.Module):
     def __init__(self, edge_features, node_features, node_feat_types=[], edge_feat_types=[], num_rbf=16, top_k=30,
                  augment_eps=0., dropout=0.1):
-        super(RNAFeatures, self).__init__()
+        super().__init__()
         """Extract RNA Features"""
         self.edge_features = edge_features
         self.node_features = node_features
