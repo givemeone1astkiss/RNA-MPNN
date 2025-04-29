@@ -1,9 +1,9 @@
 from pytorch_lightning import LightningDataModule
-from torch_geometric.data import DataLoader, Dataset
-from typing import List, Dict, Union, Tuple
+from torch.utils.data import Dataset, DataLoader, Sampler
+from typing import List, Dict, Union, Tuple, Iterator
 from Bio import SeqIO
 import numpy as np
-from ..config.glob import DATA_PATH
+from ..config.glob import DATA_PATH, MIN_LEN
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import os
@@ -62,6 +62,7 @@ def analyse_dataset(path=f'{DATA_PATH}seqs/'):
     plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.show()
 
+
 class RNADataset(Dataset):
     def __init__(self, data: List[Dict[str, Union[str, torch.Tensor]]]) -> None:
         """
@@ -90,7 +91,7 @@ class RNADataset(Dataset):
         coords_path = os.path.join(data_path, "coords")
 
         npy_files = [file for file in os.listdir(coords_path) if file.endswith(".npy")]
-        for file in tqdm(npy_files, desc="Processing .npy files"):
+        for file in tqdm(npy_files, desc="Initializing dataset"):
             file_path = os.path.join(coords_path, file)
             coordinates = torch.tensor(np.load(file_path), dtype=torch.float32)
             if torch.isnan(coordinates).any():
@@ -195,17 +196,43 @@ class RNADataset(Dataset):
             num_gen (int): Number of samples to generate with noise.
         """
         for _ in tqdm(range(num_gen), desc="Generating noisy samples"):
-            # Randomly sample an index with replacement
             idx: int = np.random.randint(len(self.data))
             sample: Dict[str, Union[str, torch.Tensor]] = self.data[idx]
 
-            # Add Gaussian noise to the coordinates
             noise: torch.Tensor = torch.normal(mean=0, std=1e-2, size=sample['coordinates'].shape)
             noisy_coordinates: torch.Tensor = sample['coordinates'] + noise
 
-            # Append the noisy sample
             self.data.append(
                 {'id': sample['id'], 'sequence': sample['sequence'], 'coordinates': noisy_coordinates})
+
+    def slice_augmentation(self, num_gen: int, min_len: int=MIN_LEN) -> None:
+        """
+        Generate new data points by slicing sequences and coordinates from existing data.
+
+        Args:
+            num_gen (int): Number of new data points to generate.
+            min_len (int): Minimum length of the sequence to consider for slicing.
+        """
+        for _ in tqdm(range(num_gen), desc="Generating sliced samples"):
+            valid_data = [item for item in self.data if item['sequence'].shape[0] > min_len]
+            if not valid_data:
+                raise ValueError("No sequences longer than min_len available for slicing.")
+
+            sample = random.choice(valid_data)
+            seq_len = sample['sequence'].shape[0]
+
+            start_idx = random.randint(0, seq_len - min_len)
+
+            sliced_sequence = sample['sequence'][start_idx:start_idx + min_len]
+            sliced_coordinates = sample['coordinates'][start_idx:start_idx + min_len]
+
+            new_data_point = {
+                'id': sample['id'],
+                'sequence': sliced_sequence,
+                'coordinates': sliced_coordinates
+            }
+
+            self.data.append(new_data_point)
 
     def getitem_by_key(self, target_id: str) -> List[Dict[str, Union[str, torch.Tensor]]]:
         """
@@ -278,58 +305,134 @@ class RNADataset(Dataset):
         """
         return self.data[idx]
 
-def split_dataset(dataset: RNADataset, split_ratio: Union[float, List[float]]) -> Tuple[RNADataset, ...]:
-    """
-    Split an RNADataset object into multiple subsets based on the given split_ratio.
-
-    Args:
-        dataset (RNADataset): The dataset to split.
-        split_ratio (Union[float, List[float]]): A float (for train-test split) or a list of floats
-            (for multiple subsets). The sum of the list must equal 1.
-
-    Returns:
-        Tuple[RNADataset, ...]: A tuple of RNADataset objects representing the subsets.
-    """
-    # Validate split_ratio
-    if isinstance(split_ratio, float):
-        if not (0 < split_ratio < 1):
-            raise ValueError("Proportion must be a float between 0 and 1.")
-        split_ratio = [split_ratio, 1 - split_ratio]
-    elif isinstance(split_ratio, list):
-        if not all(isinstance(p, float) and p > 0 for p in split_ratio):
-            raise ValueError("All split_ratio must be positive floats.")
-        if not abs(sum(split_ratio) - 1) < 1e-6:
-            raise ValueError("The sum of split_ratio must equal 1.")
-    else:
-        raise TypeError("split_ratio must be a float or a list of floats.")
-
-    # Group data points by their 'id'
-    grouped_data = {}
-    for item in dataset.data:
-        grouped_data.setdefault(item['id'], []).append(item)
-
-    # Shuffle the grouped data
-    grouped_ids = list(grouped_data.keys())
-    random.shuffle(grouped_ids)
-
-    # Calculate the sizes of each subset
-    total_groups = len(grouped_ids)
-    subset_sizes = [int(total_groups * p) for p in split_ratio]
-    subset_sizes[-1] += total_groups - sum(subset_sizes)  # Adjust the last subset size to match the total
-
-    # Split the grouped data into subsets
-    subsets = []
-    start_idx = 0
-    for size in subset_sizes:
-        subset_ids = grouped_ids[start_idx:start_idx + size]
-        subset_data = [item for rna_id in subset_ids for item in grouped_data[rna_id]]
-        subsets.append(RNADataset(subset_data))
-        start_idx += size
-
-    return tuple(subsets)
-
 class RNADataModule(LightningDataModule):
-    def __init__(self):
+    def __init__(self, data_path=DATA_PATH, split_ratio: float|List[float] = 0.9, batch_size: int=8, noise_augmentation: int|None=None, slice_augmentation: int|None=None, min_len: int|None=None) -> None:
+        """
+        Initialize the RNA data module.
+        Args:
+            data_path (str): Path to the dataset directory.
+            split_ratio (float|List[float]): Ratio for splitting the dataset into train and validation sets.
+                If a float, it represents the proportion of the training set. If a list, it represents
+                the proportions for multiple splits.
+            batch_size (int): Target sum of RNA sequence lengths for each batch.
+            noise_augmentation (int|None): Number of noisy samples to generate for data augmentation.
+            slice_augmentation (int|None): Number of sliced samples to generate for data augmentation.
+            min_len (int|None): Minimum sequence length to retain in the dataset.
+        """
         super().__init__()
-        pass
+        self.data_path = data_path
+        self.split_ratio = split_ratio
+        self.min_len = min_len
+        self.batch_size = batch_size
+        self.noise_augmentation = noise_augmentation
+        self.slice_augmentation = slice_augmentation
+        self.train_set = None
+        self.val_set = None
+        self.test_set = None
 
+
+    def setup(self, stage: str|None=None) -> None:
+        if stage == "fit" or stage is None:
+            assert type(self.split_ratio)==float and self.split_ratio > 0, "Invalid split ratio. Must be a float between 0 and 1."
+            raw = RNADataset.from_path(self.data_path)
+            if self.noise_augmentation is not None:
+                raw.noise_augmentation(num_gen=self.noise_augmentation)
+            if self.slice_augmentation is not None:
+                raw.slice_augmentation(num_gen=self.slice_augmentation)
+            if self.min_len is not None:
+                raw.filter_by_min_length(min_len=self.min_len)
+            self.train_set, self.val_set = self._split_dataset(raw,split_ratio=self.split_ratio)
+        if stage == "test" or stage is None:
+            self.test_set = RNADataset.from_path(self.data_path, is_predict=True)
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(self.train_set, batch_size=self.batch_size, num_workers=19, shuffle=True, persistent_workers=True, collate_fn=self._featurize)
+
+    def val_dataloader(self) -> DataLoader:
+        return DataLoader(self.val_set, batch_size=self.batch_size, num_workers=19, shuffle=False, persistent_workers=True, collate_fn=self._featurize)
+
+    def test_dataloader(self) -> DataLoader:
+        return DataLoader(self.test_set, batch_size=self.batch_size, num_workers=19, shuffle=False, persistent_workers=True, collate_fn=self._featurize)
+
+    @staticmethod
+    def _featurize(batch: List[Dict[str, Union[str, torch.Tensor]]]) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, List[str]]:
+        """
+        Featurize a batch of RNA data by padding sequences and coordinates to the same length.
+
+        Args:
+            batch (List[Dict[str, Union[str, torch.Tensor]]]): A batch of RNA data points.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[str]]: Padded sequence tensor (batch_size x Max_Len x 4),
+                padded coordinate tensor (batch_size x Max_Len x 7 x 3), mask tensor (batch_size x Max_Len), and a list of RNA IDs.
+        """
+
+        batch_size = len(batch)
+        max_len = max(item['sequence'].shape[0] for item in batch)
+        sequences = torch.zeros((batch_size, max_len, 4), dtype=torch.float32)
+        coordinates = torch.zeros((batch_size, max_len, 7, 3), dtype=torch.float32)
+        mask = torch.zeros((batch_size, max_len), dtype=torch.float32)
+
+        rna_ids = []
+
+
+        for i, item in enumerate(batch):
+            seq_len = item['sequence'].shape[0]
+            sequences[i, :seq_len, :] = item['sequence']
+            coordinates[i, :seq_len, :, :] = item['coordinates']
+            mask[i, :seq_len] = 1
+            rna_ids.append(item['id'])
+
+        return sequences, coordinates, mask, rna_ids
+
+    @staticmethod
+    def _split_dataset(dataset: RNADataset, split_ratio: Union[float, List[float]]) -> Tuple[RNADataset, ...]:
+        """
+        Split an RNADataset object into multiple subsets based on the given split_ratio.
+
+        Args:
+            dataset (RNADataset): The dataset to split.
+            split_ratio (Union[float, List[float]]): A float (for train-test split) or a list of floats
+                (for multiple subsets). The sum of the list must equal 1.
+
+        Returns:
+            Tuple[RNADataset, ...]: A tuple of RNADataset objects representing the subsets.
+        """
+        # Validate split_ratio
+        if isinstance(split_ratio, float):
+            if not (0 < split_ratio < 1):
+                raise ValueError("Proportion must be a float between 0 and 1.")
+            split_ratio = [split_ratio, 1 - split_ratio]
+        elif isinstance(split_ratio, list):
+            if not all(isinstance(p, float) and p > 0 for p in split_ratio):
+                raise ValueError("All split_ratio must be positive floats.")
+            if not abs(sum(split_ratio) - 1) < 1e-6:
+                raise ValueError("The sum of split_ratio must equal 1.")
+        else:
+            raise TypeError("split_ratio must be a float or a list of floats.")
+
+        # Group data points by their 'id'
+        grouped_data = {}
+        for item in dataset.data:
+            grouped_data.setdefault(item['id'], []).append(item)
+
+        # Shuffle the grouped data
+        grouped_ids = list(grouped_data.keys())
+        random.shuffle(grouped_ids)
+
+        # Calculate the sizes of each subset
+        total_groups = len(grouped_ids)
+        subset_sizes = [int(total_groups * p) for p in split_ratio]
+        subset_sizes[-1] += total_groups - sum(subset_sizes)
+
+        # Split the grouped data into subsets
+        subsets = []
+        start_idx = 0
+        for size in subset_sizes:
+            subset_ids = grouped_ids[start_idx:start_idx + size]
+            subset_data = [item for rna_id in subset_ids for item in grouped_data[rna_id]]
+            subsets.append(RNADataset(subset_data))
+            start_idx += size
+
+        return tuple(subsets)

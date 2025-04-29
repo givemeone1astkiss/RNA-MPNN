@@ -8,3 +8,4 @@ OUTPUT_PATH='./out/'
 COMPETITION_DATA = '/saisdata/'
 COMPETITION_OUT = '/saisresult/'
 
+MIN_LEN = 1000
