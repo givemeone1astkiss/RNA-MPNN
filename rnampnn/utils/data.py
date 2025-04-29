@@ -2,6 +2,7 @@ from pytorch_lightning import LightningDataModule
 from torch.utils.data import Dataset, DataLoader, Sampler
 from typing import List, Dict, Union, Tuple, Iterator
 from Bio import SeqIO
+from Bio.PDB import PDBParser, is_aa
 import numpy as np
 from ..config.glob import DATA_PATH, MIN_LEN
 from tqdm import tqdm
@@ -62,6 +63,47 @@ def analyse_dataset(path=f'{DATA_PATH}seqs/'):
     plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.show()
 
+
+def pdb_to_coords(input_path: str, output_path: str) -> None:
+    """
+    Extracts coordinates of specific atoms from RNA PDB files and saves them as .npy files.
+
+    Args:
+        input_path (str): Path to the directory containing RNA PDB files.
+        output_path (str): Path to the directory where .npy files will be saved.
+    """
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+
+    parser = PDBParser(QUIET=True)
+    atom_names = ["P", "O5'", "C5'", "C4'", "C3'", "O3'", "N1", "N9"]
+
+    for pdb_file in os.listdir(input_path):
+        if not pdb_file.endswith(".pdb"):
+            continue
+
+        pdb_path = os.path.join(input_path, pdb_file)
+        structure = parser.get_structure(pdb_file, pdb_path)
+
+        coords_list = []
+
+        for model in structure:
+            for chain in model:
+                for residue in chain:
+                    if not is_aa(residue, standard=False):
+                        residue_coords = []
+                        for atom_name in atom_names:
+                            if atom_name in residue:
+                                atom = residue[atom_name]
+                                residue_coords.append(atom.coord)
+                            else:
+                                residue_coords.append([np.nan, np.nan, np.nan])
+                        coords_list.append(residue_coords)
+
+        coords_array = np.array(coords_list, dtype=np.float32)
+
+        output_file = os.path.join(output_path, os.path.splitext(pdb_file)[0] + ".npy")
+        np.save(output_file, coords_array)
 
 class RNADataset(Dataset):
     def __init__(self, data: List[Dict[str, Union[str, torch.Tensor]]]) -> None:
