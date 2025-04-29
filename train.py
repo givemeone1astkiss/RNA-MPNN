@@ -1,6 +1,6 @@
-from rnampnn.model.rdesign import RNAModel
-from rnampnn.utils.data import RNADataModule
-from rnampnn.utils.train import get_trainer
+from rdesign.model.rdesign import RNAModel
+from rdesign.utils.data import RNADataModule
+from rdesign.utils.train import get_trainer
 
 model = RNAModel()
 data = RNADataModule.from_defaults(batch_size=8, split_ratio=[0.95, 0.05, 0.0])

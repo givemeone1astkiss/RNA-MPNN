@@ -1,13 +1,7 @@
 FROM  pytorchlightning/pytorch_lightning
 LABEL authors="Huazhi Wang"
 
-
-#RUN mkdir /saisdata/ \
-#    && mkdir /saisresult/
-
-#ADD ./data/coords/ /saisdata/coords/
-#ADD ./data/seqs/ /saisdata/seqs/
-ADD ./rnampnn /app/rnampnn
+ADD rdesign /app/rdesign
 ADD ./out /app/out
 ADD ./run.sh ./main.py /app/
 ADD ./env/ /app/env/

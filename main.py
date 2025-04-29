@@ -1,7 +1,7 @@
-from rnampnn.model.rdesign import RNAModel
-from rnampnn.config.glob import BEST_CKPT
-from rnampnn.config.seeds import seeding
-from rnampnn.utils.predict import predict
+from rdesign.model.rdesign import RNAModel
+from rdesign.config.glob import BEST_CKPT
+from rdesign.config.seeds import seeding
+from rdesign.utils.predict import predict
 import torch
 import argparse
 

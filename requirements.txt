@@ -1,6 +1,9 @@
 numpy~=1.26.4
-torch~=2.5.1+cu121
+torch~=2.6.0+cu126
 biopython~=1.78
-pytorch-lightning~=2.4.0
+pytorch-lightning~=2.5.1
 pandas~=2.2.3
 tqdm~=4.67.1
+typing_extensions~=4.10.0
+torch-geometric~=2.6.1
+e3nn~=0.5.5

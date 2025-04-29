@@ -11,31 +11,7 @@ from ..utils.data import normalize
 import pytorch_lightning as pl
 
 class MPNNLayer(nn.Module):
-    """
-    Implements a Message Passing Neural Network (MPNN) layer for graph-based learning.
-
-    Attributes:
-        num_hidden (int): Number of hidden units in the layer.
-        num_in (int): Number of input features for edges.
-        scale (int): Scaling factor for message aggregation.
-        dropout (nn.Dropout): Dropout layer for regularization.
-        norm1 (nn.LayerNorm): Layer normalization for the first residual connection.
-        norm2 (nn.LayerNorm): Layer normalization for the second residual connection.
-        W1 (nn.Linear): Linear transformation for edge features.
-        W2 (nn.Linear): Linear transformation for intermediate features.
-        W3 (nn.Linear): Linear transformation for message features.
-        dense (nn.Sequential): Feedforward network for node updates.
-    """
     def __init__(self, num_hidden, num_in, dropout=0.1, scale=30):
-        """
-        Initializes the MPNN layer.
-
-        Args:
-            num_hidden (int): Number of hidden units in the layer.
-            num_in (int): Number of input features for edges.
-            dropout (float): Dropout rate for regularization.
-            scale (int): Scaling factor for message aggregation.
-        """
         super().__init__()
         self.num_hidden = num_hidden
         self.num_in = num_in
@@ -55,17 +31,6 @@ class MPNNLayer(nn.Module):
         )
 
     def forward(self, h_V, h_E, edge_idx)->torch.Tensor:
-        """
-        Forward pass for the MPNN layer.
-
-        Args:
-            h_V (torch.Tensor): Node features of shape (num_nodes, num_hidden).
-            h_E (torch.Tensor): Edge features of shape (num_edges, num_in).
-            edge_idx (torch.Tensor): Edge indices of shape (2, num_edges).
-
-        Returns:
-            torch.Tensor: Updated node features of shape (num_nodes, num_hidden).
-        """
         src_idx, _ = edge_idx[0], edge_idx[1]
         h_message = self.W3(F.gelu(self.W2(F.gelu(self.W1(h_E)))))
         dh = scatter_sum(h_message, src_idx, dim=0) / self.scale
@@ -328,19 +293,6 @@ class RNAFeatures(nn.Module):
 
 @final
 class RNAModel(pl.LightningModule):
-    """
-    RNA Model for sequence generation using MPNN.
-    Attributes:
-        hidden (int): Number of hidden units.
-        vocab_size (int): Size of the vocabulary.
-        k_neighbors (int): Number of nearest neighbors.
-        dropout (float): Dropout rate.
-        node_feat_types (list): Types of node features to include.
-        edge_feat_types (list): Types of edge features to include.
-        num_encoder_layers (int): Number of encoder layers.
-        num_decoder_layers (int): Number of decoder layers.
-        lr (float): Learning rate.
-    """
     def __init__(self,
                 hidden_dim: int = 128,
                 vocab_size: int = 4,
@@ -351,18 +303,6 @@ class RNAModel(pl.LightningModule):
                 num_mpnn_layers: int = 9,
                 lr: float = 0.001
                 ):
-        """
-        Initializes the RNAModel.
-        Args:
-            hidden_dim (int): Number of hidden units.
-            vocab_size (int): Size of the vocabulary.
-            k_neighbors (int): Number of nearest neighbors.
-            dropout (float): Dropout rate.
-            node_feat_types (list): Types of node features to include.
-            edge_feat_types (list): Types of edge features to include.
-            num_mpnn_layers (int): Number of mpnn layers.
-            lr (float): Learning rate.
-        """
         super().__init__()
 
         if edge_feat_types is None:
@@ -398,21 +338,7 @@ class RNAModel(pl.LightningModule):
         logits = self.readout(h_V)
         return logits, S
 
-    def sample(self, X, S, mask=None):
-        X, gt_S, h_V, h_E, E_idx, _ = self.features(X, S, mask)
-        for layer in self.mpnn_layers:
-            h_EV = torch.cat([h_E, h_V[E_idx[0]], h_V[E_idx[1]]], dim=-1)
-            h_V = layer(h_V, h_EV, E_idx)
-        logits = self.readout(h_V)
-        return logits, gt_S
-
     def configure_optimizers(self):
-        """
-        Configure the optimizer for the model.
-
-        Ruturn:
-            torch.optim.Adam: Adam optimizer with the specified learning rate.
-        """
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
     def training_step(self, batch) -> STEP_OUTPUT:
@@ -478,22 +404,13 @@ class RNAModel(pl.LightningModule):
         return {'test_loss': loss, 'test_recovery_rate': valid_recovery}
 
     def predict(self, batch, batch_id, output_dir, filename):
-        """
-        Generate predictions for a batch of data and save them to a CSV file.
-
-        Args:
-            batch (tuple): A tuple containing the input data (X, S, mask, lengths, pdb_ids).
-            batch_id (int): The ID of the current batch.
-            output_dir (str): The directory to save the output CSV file.
-            filename (str): The name of the output CSV file.
-        """
         self.eval()
         X, S, mask, lengths, pdb_ids = batch
         X = X.to(self.device)
         S = S.to(self.device)
         mask = mask.to(self.device)
 
-        logits, _ = self.sample(X, S, mask)
+        logits, _ = self(X, S, mask)
         probs = F.softmax(logits, dim=-1)
         samples = probs.argmax(dim=-1)
         start_idx = 0
