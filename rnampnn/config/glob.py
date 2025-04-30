@@ -9,3 +9,4 @@ COMPETITION_DATA = '/saisdata/'
 COMPETITION_OUT = '/saisresult/'
 
 MIN_LEN = 1000
+NUM_MAIN_SEQ_ATOMS = 7
