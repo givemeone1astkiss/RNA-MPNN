@@ -1,6 +1,6 @@
 from pytorch_lightning import LightningDataModule
-from torch.utils.data import Dataset, DataLoader, Sampler
-from typing import List, Dict, Union, Tuple, Iterator
+from torch.utils.data import Dataset, DataLoader
+from typing import List, Dict, Union, Tuple
 from Bio import SeqIO
 from Bio.PDB import PDBParser, is_aa
 import numpy as np
@@ -375,7 +375,7 @@ class RNADataModule(LightningDataModule):
 
     def setup(self, stage: str|None=None) -> None:
         if stage == "fit" or stage is None:
-            assert type(self.split_ratio)==float and self.split_ratio > 0, "Invalid split ratio. Must be a float between 0 and 1."
+            assert isinstance(self.split_ratio, float) and self.split_ratio > 0, "Invalid split ratio. Must be a float between 0 and 1."
             raw = RNADataset.from_path(self.data_path)
             if self.noise_augmentation is not None:
                 raw.noise_augmentation(num_gen=self.noise_augmentation)
