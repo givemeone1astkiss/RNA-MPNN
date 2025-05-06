@@ -3,7 +3,8 @@ import torch.nn as nn
 from pytorch_lightning import LightningModule
 from typing import Tuple, Any
 from torch import Tensor
-from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, LEPS, SEPS
+
+from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, LEPS, SEPS, NUM_RES_TYPES
 from torch.nn import functional as F
 
 class GraphNormalization(nn.Module):
@@ -51,6 +52,7 @@ class GraphNormalization(nn.Module):
 
         return normalized_features
 
+
 def to_atom_format(coords: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Convert the coordinates and mask to atom format.
@@ -66,13 +68,14 @@ def to_atom_format(coords: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tens
     atom_mask = mask.unsqueeze(-1).expand(-1, -1, NUM_MAIN_SEQ_ATOMS).reshape(mask.shape[0], -1)
     return atom_coords, atom_mask
 
+
 class AtomFeature(nn.Module):
     def __init__(self, num_atom_neighbours: int, atom_embedding_dim: int = DEFAULT_HIDDEN_DIM):
         super().__init__()
         self.num_atom_neighbours = num_atom_neighbours
         self.atom_embedding_dim = atom_embedding_dim
         self.embedding = nn.Embedding(num_embeddings=NUM_MAIN_SEQ_ATOMS, embedding_dim=self.atom_embedding_dim)
-        self.normalization = GraphNormalization(embedding_dim=self.atom_embedding_dim)
+        self.graph_norm = GraphNormalization(embedding_dim=self.atom_embedding_dim)
 
     def _get_atom_graph(self, atom_coords: torch.Tensor, atom_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -155,7 +158,7 @@ class AtomFeature(nn.Module):
         embeddings = embeddings * atom_mask.unsqueeze(-1)
 
         # Normalize embeddings
-        return self.normalization(embeddings, atom_mask)
+        return self.graph_norm(embeddings, atom_mask)
 
     def forward(self, atom_coords: torch.Tensor, atom_mask: torch.Tensor):
         """
@@ -175,19 +178,19 @@ class AtomFeature(nn.Module):
 
 
 class AtomMPNN(nn.Module):
-    def __init__(self, atom_embedding_dim: int, num_atom_mpnn_layers: int, dropout: float = 0.1):
+    def __init__(self, atom_embedding_dim: int, depth_atom_mpnn: int, dropout: float = 0.1):
         """
         Message Passing Neural Network (MPNN) for atom-level features.
         Args:
             atom_embedding_dim (int): Dimension of the hidden layers.
-            num_atom_mpnn_layers (int): Number of linear layers for message generation.
+            depth_atom_mpnn (int): Number of linear layers for message generation.
             dropout (float): Dropout rate for regularization.
         """
         super().__init__()
         self.graph_norm = GraphNormalization(embedding_dim=atom_embedding_dim)
         layers = []
         input_dim = atom_embedding_dim * 2 + 1
-        for _ in range(num_atom_mpnn_layers):
+        for _ in range(depth_atom_mpnn):
             layers.append(nn.Linear(input_dim, atom_embedding_dim))
             layers.append(nn.GELU())
             layers.append(nn.Dropout(dropout))
@@ -263,7 +266,7 @@ class AtomMPNN(nn.Module):
         updated_atom_embedding = updated_atom_embedding * atom_mask.unsqueeze(-1)
         return updated_atom_embedding
 
-    def forward(self, atom_embedding: torch.Tensor, atom_cross_dists: torch.Tensor, atom_edge_index: torch.Tensor, atom_mask: torch.Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    def forward(self, atom_embedding: torch.Tensor, atom_cross_dists: torch.Tensor, atom_edge_index: torch.Tensor, atom_mask: torch.Tensor) -> torch.Tensor:
         """
         Forward pass of the AtomMPNN module.
 
@@ -274,16 +277,12 @@ class AtomMPNN(nn.Module):
             atom_edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
 
         Returns:
-            Tuple[Tensor, Tensor, Tensor, Tensor]:
-                - atom_embedding: Updated node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
-                - atom_cross_dists: Distances to neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
-                - atom_edge_index: Indices of neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
-                - atom_mask: Mask indicating valid atoms of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS).
+            atom_embedding (torch.Tensor): Updated node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
         """
         messages = self.message(atom_embedding, atom_cross_dists, atom_edge_index, atom_mask)
         atom_embedding = self.aggregation(atom_embedding, messages, atom_edge_index, atom_mask)
         atom_embedding = self.graph_norm(atom_embedding, atom_mask)
-        return atom_embedding, atom_cross_dists, atom_edge_index, atom_mask
+        return atom_embedding
 
 
 class AtomPooling(nn.Module):
@@ -399,6 +398,7 @@ class ResFeature(nn.Module):
             layers.append(nn.Dropout(dropout))
             input_dim = res_embedding_dim
         self.res_embedding_layers = nn.Sequential(*layers)
+        self.graph_norm = GraphNormalization(embedding_dim=res_embedding_dim)
 
         layers = []
         input_dim = raw_edge_dim
@@ -438,7 +438,22 @@ class ResFeature(nn.Module):
         distances = distances + diagonal_mask * LEPS
 
         # Select k-nearest neighbors
-        dist_neighbour, edge_index = torch.topk(distances, self.num_neighbours, dim=-1, largest=False)
+        _, edge_index = torch.topk(
+            distances,
+            min(self.num_neighbours, max_len),  # Ensure we don't request more neighbors than available
+            dim=-1,
+            largest=False
+        )
+
+        # If padding is needed (when max_len < self.num_neighbours)
+        if self.num_neighbours > max_len:
+            padding_size = self.num_neighbours - max_len
+            # Pad `edge_index` with -1 and `dist_neighbour` with a large value (e.g., LEPS)
+            edge_index = torch.cat(
+                [edge_index,
+                torch.full((batch_size, max_len, padding_size), -1, device=edge_index.device, dtype=edge_index.dtype)],
+                dim=-1
+            )
 
         # Create a tensor of indices for comparison
         indices = torch.arange(max_len, device=edge_index.device).view(1, -1, 1)  # Shape: (1, max_len, 1)
@@ -472,7 +487,7 @@ class ResFeature(nn.Module):
         Returns:
             neighbours_coords (torch.Tensor): Tensor of shape (batch_size, max_len, num_neighbours, NUM_MAIN_SEQ_ATOMS, 3).
         """
-        batch_size, max_len, num_atoms, _ = coords.shape
+        _, _, num_atoms, _ = coords.shape
         num_neighbours = edge_index.shape[-1]
 
         # Replace -1 in edge_index with 0 temporarily
@@ -509,7 +524,7 @@ class ResFeature(nn.Module):
         Returns:
             inside_dists (torch.Tensor): Pairwise distances of shape (batch_size, max_len, num_inside_dist_atoms - 1).
         """
-        batch_size, max_len, num_atoms, _ = coords.shape
+        _, _, num_atoms, _ = coords.shape
         assert num_atoms >= self.num_inside_dist_atoms, f"NUM_MAIN_SEQ_ATOMS({num_atoms}) must be at least num_inside_angle_atoms({self.num_inside_angle_atoms}) for angle calculation."
 
         # Truncate to the first `num_inside_dist_atoms`
@@ -539,7 +554,7 @@ class ResFeature(nn.Module):
         Returns:
             inside_angles (torch.Tensor): Cosine values of angles of shape (batch_size, max_len, num_inside_angle_atoms-2).
         """
-        batch_size, max_len, num_atoms, _ = coords.shape
+        _, _, num_atoms, _ = coords.shape
         assert num_atoms >= self.num_inside_angle_atoms, f"NUM_MAIN_SEQ_ATOMS({num_atoms}) must be at least num_inside_angle_atoms({self.num_inside_angle_atoms}) for angle calculation."
 
         # Truncate to the first six atoms
@@ -573,7 +588,7 @@ class ResFeature(nn.Module):
         Returns:
             inside_dihedrals (torch.Tensor): Cosine of dihedral angles of shape (batch_size, max_len, num_inside_dihedral_atoms-3).
         """
-        batch_size, max_len, num_atoms, _ = coords.shape
+        _, _, num_atoms, _ = coords.shape
         assert num_atoms >= self.num_inside_dihedral_atoms, f"NUM_MAIN_SEQ_ATOMS({num_atoms}) must be at least num_inside_dihedral_atoms({self.num_inside_dihedral_atoms}) for dihedral calculation."
 
         # Truncate to the first num_inside_dihedral_atoms
@@ -602,7 +617,7 @@ class ResFeature(nn.Module):
         Returns:
             cross_dists (torch.Tensor): Tensor of shape (batch_size, max_len, num_neighbour, num_cross_dist_atoms ** 2) containing pairwise distances.
         """
-        batch_size, max_len, num_atoms, _ = coords.shape
+        batch_size, max_len, _, _, = coords.shape
         num_neighbour = edge_index.shape[-1]
         num_cross_dist_atoms = self.num_cross_dist_atoms
 
@@ -638,7 +653,7 @@ class ResFeature(nn.Module):
         Returns:
             cross_angles (torch.Tensor): Cosine values of angles of shape (batch_size, max_len, num_neighbours, (num_cross_angle_atoms-1) ** 2).
         """
-        batch_size, max_len, num_atoms, _ = coords.shape
+        batch_size, max_len, _, _ = coords.shape
         num_neighbour = edge_index.shape[-1]
         num_cross_angles_atoms = self.num_cross_angle_atoms
 
@@ -684,7 +699,7 @@ class ResFeature(nn.Module):
         Returns:
             cross_dihedrals (torch.Tensor): Cosine values of dihedral angles of shape (batch_size, max_len, num_neighbours, (num_cross_dihedral_atoms-2) ** 2).
         """
-        batch_size, max_len, num_atoms, _ = coords.shape
+        batch_size, max_len, _, _ = coords.shape
         num_neighbour = edge_index.shape[-1]
         num_cross_dihedrals = self.num_cross_dihedral_atoms
 
@@ -799,6 +814,7 @@ class ResFeature(nn.Module):
 
         # Compute residue node embeddings
         res_embedding = self._res_embedding(coords, mask, atom_embedding)  # Shape: (batch_size, max_len, res_embedding_dim)
+        res_embedding = self.graph_norm(res_embedding, mask)
 
         return res_embedding, res_edge_embedding, edge_index
 
@@ -807,16 +823,25 @@ class ResMPNN(nn.Module):
     def __init__(self,
                  res_embedding_dim: int,
                  res_edge_embedding_dim: int,
-                 num_res_mpnn_layers: int,
+                 depth_res_mpnn: int,
                  num_edge_layers: int,
                  dropout: float = 0.1):
+        """
+        Initialize the Residue Message Passing Neural Network (ResMPNN).
+        Args:
+            res_embedding_dim: The dimension of the residue embedding.
+            res_edge_embedding_dim: The dimension of the residue edge embedding.
+            depth_res_mpnn: The number of message passing layers.
+            num_edge_layers: The number of edge update layers.
+            dropout: The dropout rate for regularization.
+        """
         super().__init__()
         self.graph_norm = GraphNormalization(embedding_dim=res_embedding_dim)
 
         # Message passing layers for node updates
         layers = []
         input_dim = res_embedding_dim * 2 + res_edge_embedding_dim
-        for _ in range(num_res_mpnn_layers):
+        for _ in range(depth_res_mpnn):
             layers.append(nn.Linear(input_dim, res_embedding_dim))
             layers.append(nn.GELU())
             layers.append(nn.Dropout(dropout))
@@ -846,7 +871,7 @@ class ResMPNN(nn.Module):
         Returns:
             torch.Tensor: Messages of shape (batch_size, max_len, num_neighbours, res_embedding_dim).
         """
-        batch_size, max_len, num_neighbours, _ = res_edge_embedding.shape
+        _, _, num_neighbours, _ = res_edge_embedding.shape
 
         # Mask invalid nodes and expand for neighbors
         res_embedding = res_embedding * mask.unsqueeze(-1)
@@ -922,7 +947,7 @@ class ResMPNN(nn.Module):
             torch.Tensor: Updated edge features of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
         """
         # Gather neighbor node features using edge_index
-        batch_size, max_len, num_neighbours = edge_index.shape
+        _, _, num_neighbours = edge_index.shape
         res_embedding_dim = res_embedding.shape[-1]
 
         # Replace -1 in edge_index with 0 temporarily for safe indexing
@@ -946,8 +971,7 @@ class ResMPNN(nn.Module):
 
         return updated_edge_features
 
-    def forward(self, res_embedding: torch.Tensor, res_edge_embedding: torch.Tensor, edge_index: torch.Tensor,
-                mask: torch.Tensor) -> tuple[Any, Any, Tensor, Tensor]:
+    def forward(self, res_embedding: torch.Tensor, res_edge_embedding: torch.Tensor, edge_index: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass for residue-level MPNN.
 
@@ -958,11 +982,9 @@ class ResMPNN(nn.Module):
             mask (torch.Tensor): Mask indicating valid residues of shape (batch_size, max_len).
 
         Returns:
-            Tuple[Tensor, Tensor, Tensor, Tensor]:
+            Tuple[Tensor, Tensor]:
                 - res_embedding: Updated node features of shape (batch_size, max_len, res_embedding_dim).
                 - res_edge_embedding: Updated edge features of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
-                - edge_index: Edge indices of shape (batch_size, max_len, num_neighbours).
-                - mask: Mask indicating valid residues of shape (batch_size, max_len).
         """
         # Generate messages
         messages = self.message(res_embedding, res_edge_embedding, edge_index, mask)
@@ -976,36 +998,168 @@ class ResMPNN(nn.Module):
         # Update edge features
         res_edge_embedding = self._update_edges(res_embedding, res_edge_embedding, edge_index)
 
-        return res_embedding, res_edge_embedding, edge_index, mask
-
-
-class ResPooling(nn.Module):
-    def __init__(self):
-        super().__init__()
+        return res_embedding, res_edge_embedding
 
 
 class Readout(nn.Module):
-    def __init__(self):
+    def __init__(self, res_embedding_dim: int, readout_hidden_dim: int, num_layers: int, dropout: float = 0.1):
+        """
+        Initialize the Readout module for residue-level classification.
+        Args:
+            res_embedding_dim: The dimension of the residue embedding.
+            readout_hidden_dim: The dimension of the hidden layers in the readout network.
+            num_layers: The number of layers in the readout network.
+            dropout: The dropout rate for regularization.
+        """
         super().__init__()
+        layers = []
+        input_dim = res_embedding_dim
+
+        # Build feedforward layers
+        for _ in range(num_layers - 1):
+            layers.append(nn.Linear(input_dim, readout_hidden_dim))
+            layers.append(nn.GELU())
+            layers.append(nn.Dropout(dropout))
+            input_dim = readout_hidden_dim
+
+        # Final layer for classification
+        layers.append(nn.Linear(input_dim, NUM_RES_TYPES))
+        self.readout_layers = nn.Sequential(*layers)
+
+    def forward(self, res_embedding: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            res_embedding (torch.Tensor): Node features of shape (batch_size, max_len, res_embedding_dim).
+            mask (torch.Tensor): Mask indicating valid residues of shape (batch_size, max_len).
+
+        Returns:
+            torch.Tensor: Predicted residue type logits of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS).
+        """
+        # Apply feedforward network
+        logits = self.readout_layers(res_embedding)  # Shape: (batch_size, max_len, NUM_MAIN_SEQ_ATOMS)
+
+        # Mask padding residues
+        logits = logits * mask.unsqueeze(-1)  # Set predictions for padding residues to zero
+
+        return logits
 
 
 class RNAMPNN(LightningModule):
-    def __init__(self, num_atom_neighbours: int, lr: float = 1e-3):
+    def __init__(self,
+                 num_atom_neighbours: int = 30,
+                 atom_embedding_dim: int = DEFAULT_HIDDEN_DIM,
+                 depth_atom_mpnn: int = 2,
+                 num_atom_mpnn_layers = 2,
+                 num_res_neighbours: int = 30,
+                 num_inside_dist_atoms: int = NUM_MAIN_SEQ_ATOMS,
+                 num_inside_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
+                 num_inside_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
+                 num_cross_dist_atoms: int = NUM_MAIN_SEQ_ATOMS,
+                 num_cross_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
+                 num_cross_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
+                 atom_pooling_hidden_dim: int = DEFAULT_HIDDEN_DIM,
+                 res_embedding_dim: int = DEFAULT_HIDDEN_DIM,
+                 res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
+                 num_atom_pooling_layers: int = 2,
+                 depth_res_feature: int = 2,
+                 depth_res_edge_feature: int = 2,
+                 num_res_mpnn_layers: int = 2,
+                 depth_res_mpnn: int = 2,
+                 num_mpnn_edge_layers: int = 2,
+                 readout_hidden_dim: int = DEFAULT_HIDDEN_DIM,
+                 num_readout_layers: int = 2,
+                 dropout: float = 0.1,
+                 lr: float = 1e-3,):
         super().__init__()
         self.save_hyperparameters()
-        self.num_atom_neighbours = num_atom_neighbours
+        self.atom_feature = AtomFeature(num_atom_neighbours, atom_embedding_dim)
+        self.atom_mpnn_layers = nn.ModuleList([AtomMPNN(atom_embedding_dim, depth_atom_mpnn, dropout=dropout) for _ in range(num_atom_mpnn_layers)])
+        self.res_feature = ResFeature(num_neighbours=num_res_neighbours,
+                                      num_inside_dist_atoms=num_inside_dist_atoms,
+                                      num_inside_angle_atoms=num_inside_angle_atoms,
+                                      num_inside_dihedral_atoms=num_inside_dihedral_atoms,
+                                      num_cross_dist_atoms=num_cross_dist_atoms,
+                                      num_cross_angle_atoms=num_cross_angle_atoms,
+                                      num_cross_dihedral_atoms=num_cross_dihedral_atoms,
+                                      atom_pooling_hidden_dim=atom_pooling_hidden_dim,
+                                      atom_embedding_dim=atom_embedding_dim,
+                                      res_embedding_dim=res_embedding_dim,
+                                      res_edge_embedding_dim=res_edge_embedding_dim,
+                                      num_atom_pooling_layers=num_atom_pooling_layers,
+                                      num_layers=depth_res_feature,
+                                      num_edge_layers=depth_res_edge_feature,
+                                      dropout=dropout)
+        self.res_mpnn_layers = nn.ModuleList([ResMPNN(res_embedding_dim=res_embedding_dim, res_edge_embedding_dim=res_edge_embedding_dim, depth_res_mpnn=depth_res_mpnn, num_edge_layers=num_mpnn_edge_layers) for _ in range(num_res_mpnn_layers)])
+        self.readout = Readout(res_embedding_dim=res_embedding_dim, readout_hidden_dim=readout_hidden_dim, num_layers=num_readout_layers, dropout=dropout)
+        self.loss_fn = nn.CrossEntropyLoss()
 
-    def forward(self):
-        pass
+    def forward(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for the RNAMPNN model.
 
-    def training_step(self, batch, batch_idx):
-        pass
+        Args:
+            coords (torch.Tensor): Atom coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
+            mask (torch.Tensor): Mask indicating valid residues of shape (batch_size, max_len).
 
-    def validation_step(self, batch, batch_idx):
-        pass
+        Returns:
+            torch.Tensor: Predicted residue type logits of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS).
+        """
+        atom_coords, atom_mask = to_atom_format(coords, mask)
+        atom_embedding, atom_cross_dists, atom_edge_index = self.atom_feature(atom_coords, atom_mask)
+        for layer in self.atom_mpnn_layers:
+            atom_embedding = layer(atom_embedding, atom_cross_dists, atom_edge_index, atom_mask)
+        res_embedding, res_edge_embedding, edge_index = self.res_feature(coords, mask, atom_embedding)
+        for layer in self.res_mpnn_layers:
+            res_embedding, res_edge_embedding = layer(res_embedding, res_edge_embedding, edge_index, mask)
+        logits = self.readout(res_embedding, mask)
 
-    def test_step(self, batch, batch_idx):
-        pass
+        return logits
+
+    def training_step(self, batch):
+        sequences, coords, mask, _ = batch
+        sequences.to(self.device)
+        coords = coords.to(self.device)
+        mask = mask.to(self.device)
+        logits = self(coords, mask)
+        print(sequences.view(-1).shape)
+        print(F.softmax(logits, dim=-1).view(-1).shape)
+        loss = self.loss_fn(F.softmax(logits, dim=-1).view(-1), sequences.view(-1))
+
+        self.log('train_loss', loss, prog_bar=True, sync_dist=True)
+        return loss
+
+    def validation_step(self, batch):
+        """
+        Perform a validation step, computing loss and sequence recovery rate.
+
+        Args:
+            batch: A batch of validation data.
+
+        Returns:
+            dict: Validation metrics including loss and recovery rate.
+        """
+        sequences, coords, mask, _ = batch
+        sequences = sequences.to(self.device)
+        coords = coords.to(self.device)
+        mask = mask.to(self.device)
+
+        # Forward pass
+        logits = self(coords, mask)
+
+        # Compute loss
+        loss = self.loss_fn(F.softmax(logits, dim=-1).view(-1), sequences.view(-1))
+        self.log('val_loss', loss, prog_bar=True, sync_dist=True)
+
+        # Compute sequence recovery rate
+        probs = F.softmax(logits, dim=-1)
+        correct = (probs.argmax(dim=-1) == sequences.argmax(dim=-1)) * mask  # Mask padding residues
+        recovery_rate = correct.sum().item() / mask.sum().item()
+        self.log('val_recovery_rate', recovery_rate, prog_bar=True, sync_dist=True)
+
+        return {'val_loss': loss, 'val_recovery_rate': recovery_rate}
+
+    def test_step(self, batch):
+        _, coords, mask, pdb_id = batch
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)

@@ -4,7 +4,7 @@ from typing import List, Dict, Union, Tuple
 from Bio import SeqIO
 from Bio.PDB import PDBParser, is_aa
 import numpy as np
-from ..config.glob import DATA_PATH, MIN_LEN
+from ..config.glob import DATA_PATH, MIN_LEN, VOCAB, NUM_MAIN_SEQ_ATOMS, NUM_RES_TYPES
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import os
@@ -178,7 +178,7 @@ class RNADataset(Dataset):
                     reference_coords = coords_np[seq_idx, 5, :]
                     if not np.isnan(reference_coords).any():
                         random_vector = np.random.randn(3)
-                        random_vector = 4 * random_vector / np.linalg.norm(random_vector)
+                        random_vector = NUM_RES_TYPES * random_vector / np.linalg.norm(random_vector)
                         atom_coords[seq_idx] = reference_coords + random_vector
         return torch.tensor(coords_np, dtype=torch.float32)
 
@@ -193,11 +193,10 @@ class RNADataset(Dataset):
         Returns:
             torch.Tensor: One-hot encoded representation of the sequence.
         """
-        mapping = {'A': 0, 'U': 1, 'C': 2, 'G': 3}
-        one_hot = np.zeros((len(sequence), 4), dtype=np.float32)
+        one_hot = np.zeros((len(sequence), NUM_RES_TYPES), dtype=np.float32)
         for i, nucleotide in enumerate(sequence):
-            if nucleotide in mapping:
-                one_hot[i, mapping[nucleotide]] = 1.0
+            if nucleotide in VOCAB:
+                one_hot[i, VOCAB[nucleotide]] = 1.0
         return torch.tensor(one_hot, dtype=torch.float32)
 
     @staticmethod
@@ -406,14 +405,17 @@ class RNADataModule(LightningDataModule):
             batch (List[Dict[str, Union[str, torch.Tensor]]]): A batch of RNA data points.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[str]]: Padded sequence tensor (batch_size x Max_Len x 4),
-                padded coordinate tensor (batch_size x Max_Len x 7 x 3), mask tensor (batch_size x Max_Len), and a list of RNA IDs.
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[str]]:
+                - sequences: Padded one-hot encoded sequences of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS).
+                - coords: Padded coordinates of atoms of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
+                - mask: Mask indicating valid positions in the sequences of shape (batch_size, max_len).
+                - rna_ids: List of RNA IDs corresponding to the batch.
         """
 
         batch_size = len(batch)
         max_len = max(item['sequence'].shape[0] for item in batch)
-        sequences = torch.zeros((batch_size, max_len, 4), dtype=torch.float32)
-        coordinates = torch.zeros((batch_size, max_len, 7, 3), dtype=torch.float32)
+        sequences = torch.zeros((batch_size, max_len, NUM_RES_TYPES), dtype=torch.float32)
+        coords = torch.zeros((batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3), dtype=torch.float32)
         mask = torch.zeros((batch_size, max_len), dtype=torch.float32)
 
         rna_ids = []
@@ -422,11 +424,11 @@ class RNADataModule(LightningDataModule):
         for i, item in enumerate(batch):
             seq_len = item['sequence'].shape[0]
             sequences[i, :seq_len, :] = item['sequence']
-            coordinates[i, :seq_len, :, :] = item['coordinates']
+            coords[i, :seq_len, :, :] = item['coordinates']
             mask[i, :seq_len] = 1
             rna_ids.append(item['id'])
 
-        return sequences, coordinates, mask, rna_ids
+        return sequences, coords, mask, rna_ids
 
     @staticmethod
     def _split_dataset(dataset: RNADataset, split_ratio: Union[float, List[float]]) -> Tuple[RNADataset, ...]:
