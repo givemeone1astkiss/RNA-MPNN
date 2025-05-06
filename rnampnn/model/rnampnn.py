@@ -1,14 +1,13 @@
 import torch
 import torch.nn as nn
 from pytorch_lightning import LightningModule
-from typing import Tuple
+from typing import Tuple, Any
 from torch import Tensor
-from ..config.glob import NUM_MAIN_SEQ_ATOMS
+from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, LEPS, SEPS
 from torch.nn import functional as F
 
-
 class GraphNormalization(nn.Module):
-    def __init__(self, embedding_dim: int, epsilon: float = 1e-5):
+    def __init__(self, embedding_dim: int, epsilon: float = SEPS):
         """
         Graph normalization layer for normalizing node features in a graph.
         Args:
@@ -68,9 +67,9 @@ def to_atom_format(coords: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tens
     return atom_coords, atom_mask
 
 class AtomFeature(nn.Module):
-    def __init__(self, num_atom_neighbour: int, atom_embedding_dim: int = 32):
+    def __init__(self, num_atom_neighbours: int, atom_embedding_dim: int = DEFAULT_HIDDEN_DIM):
         super().__init__()
-        self.num_atom_neighbour = num_atom_neighbour
+        self.num_atom_neighbours = num_atom_neighbours
         self.atom_embedding_dim = atom_embedding_dim
         self.embedding = nn.Embedding(num_embeddings=NUM_MAIN_SEQ_ATOMS, embedding_dim=self.atom_embedding_dim)
         self.normalization = GraphNormalization(embedding_dim=self.atom_embedding_dim)
@@ -85,8 +84,8 @@ class AtomFeature(nn.Module):
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]:
-                - atom_cross_dists: Distances to neighbors (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour).
-                - atom_edge_index: Indices of neighbors (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour).
+                - atom_cross_dists: Distances to neighbors (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
+                - atom_edge_index: Indices of neighbors (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
         """
         batch_size, num_atoms, _ = atom_coords.shape
 
@@ -95,19 +94,24 @@ class AtomFeature(nn.Module):
 
         # Compute pairwise distances
         d_coords = atom_coords.unsqueeze(1) - atom_coords.unsqueeze(2)  # (batch_size, num_atoms, num_atoms, 3)
-        distances = torch.sqrt(torch.sum(d_coords ** 2, dim=-1) + 1e-6)  # (batch_size, num_atoms, num_atoms)
+        distances = torch.sqrt(torch.sum(d_coords ** 2, dim=-1) + SEPS)  # (batch_size, num_atoms, num_atoms)
+
+        # Create a diagonal tensor with LEPS values
+        diagonal = torch.eye(num_atoms, device=distances.device).unsqueeze(0)  # (1, num_atoms, num_atoms)
+        distances = distances + diagonal * LEPS  # Add diagonal tensor to exclude self-loops
 
         # Mask invalid distances (real atoms to padding atoms)
-        distances = distances * atom_mask_2d + (1.0 - atom_mask_2d) * 1e6  # Large value for invalid distances
+        distances = distances * atom_mask_2d + (1.0 - atom_mask_2d) * LEPS  # Large value for invalid distances
 
         # Select k-nearest neighbors
-        atom_cross_dists, atom_edge_idx = torch.topk(distances, min(self.num_atom_neighbour, num_atoms), dim=-1, largest=False)
+        atom_cross_dists, atom_edge_idx = torch.topk(distances, min(self.num_atom_neighbours, num_atoms), dim=-1,
+                                                     largest=False)
 
-        # Handle cases where num_atom_neighbour exceeds the number of valid atoms
-        if self.num_atom_neighbour > num_atoms:
-            padding_size = self.num_atom_neighbour - num_atoms
+        # Handle cases where num_atom_neighbours exceeds the number of valid atoms
+        if self.num_atom_neighbours > num_atoms:
+            padding_size = self.num_atom_neighbours - num_atoms
             atom_cross_dists = torch.cat(
-                [atom_cross_dists, torch.full((batch_size, num_atoms, padding_size), 1e6, device=distances.device)],
+                [atom_cross_dists, torch.full((batch_size, num_atoms, padding_size), LEPS, device=distances.device)],
                 dim=-1
             )
             atom_edge_idx = torch.cat(
@@ -116,12 +120,17 @@ class AtomFeature(nn.Module):
                 dim=-1
             )
 
-        # Set all neighbors of padding atoms to -1 and distances to 1e6
+        # Replace self-loops (where atom_edge_idx == node index) with -1
+        node_indices = torch.arange(num_atoms, device=atom_edge_idx.device).view(1, -1, 1)  # Shape: (1, num_atoms, 1)
+        atom_edge_idx = torch.where(atom_edge_idx == node_indices, -1, atom_edge_idx)
+
+        # Set all neighbors of padding atoms to -1 and distances to LEPS
         padding_atom_mask = (atom_mask == 0).unsqueeze(-1)  # (batch_size, num_atoms, 1)
         atom_edge_idx = atom_edge_idx.masked_fill(padding_atom_mask, -1)
-        atom_cross_dists = atom_cross_dists.masked_fill(padding_atom_mask, 1e6)
+        atom_cross_dists = atom_cross_dists.masked_fill(padding_atom_mask, LEPS)
 
         return atom_cross_dists, atom_edge_idx
+
 
     def _atom_embedding(self, atom_mask: torch.Tensor) -> torch.Tensor:
         """
@@ -157,8 +166,8 @@ class AtomFeature(nn.Module):
 
         Returns:
             atom_embedding: Encoded atom features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
-            atom_cross_dists: Distances to neighbors (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour).
-            atom_edge_index: Indices of neighbors (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour).
+            atom_cross_dists: Distances to neighbors (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
+            atom_edge_index: Indices of neighbors (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
         """
         atom_embedding = self._atom_embedding(atom_mask)
         atom_cross_dists, atom_edge_index = self._get_atom_graph(atom_coords, atom_mask)
@@ -166,41 +175,36 @@ class AtomFeature(nn.Module):
 
 
 class AtomMPNN(nn.Module):
-    def __init__(self, atom_hidden_dim: int, num_layers: int, dropout: float = 0.1):
+    def __init__(self, atom_embedding_dim: int, num_atom_mpnn_layers: int, dropout: float = 0.1):
         """
         Message Passing Neural Network (MPNN) for atom-level features.
         Args:
-            atom_hidden_dim (int): Dimension of the hidden layers.
-            num_layers (int): Number of linear layers for message generation.
+            atom_embedding_dim (int): Dimension of the hidden layers.
+            num_atom_mpnn_layers (int): Number of linear layers for message generation.
             dropout (float): Dropout rate for regularization.
         """
         super().__init__()
-        self.atom_hidden_dim = atom_hidden_dim
-        self.num_layers = num_layers
-        self.graph_norm = GraphNormalization(embedding_dim=atom_hidden_dim)
-
+        self.graph_norm = GraphNormalization(embedding_dim=atom_embedding_dim)
         layers = []
-        input_dim = atom_hidden_dim * 2 + 1
-        for _ in range(num_layers):
-            layers.append(nn.Linear(input_dim, atom_hidden_dim))
+        input_dim = atom_embedding_dim * 2 + 1
+        for _ in range(num_atom_mpnn_layers):
+            layers.append(nn.Linear(input_dim, atom_embedding_dim))
             layers.append(nn.GELU())
             layers.append(nn.Dropout(dropout))
-            input_dim = atom_hidden_dim
+            input_dim = atom_embedding_dim
         self.message_layers = nn.Sequential(*layers)
 
-    def message(self, atom_mask: torch.Tensor, atom_embedding: torch.Tensor, atom_cross_dists: torch.Tensor,
-                atom_edge_index: torch.Tensor) -> torch.Tensor:
+    def message(self, atom_embedding: torch.Tensor, atom_cross_dists: torch.Tensor, atom_edge_index: torch.Tensor, atom_mask: torch.Tensor) -> torch.Tensor:
         """
         Generate messages for each edge in the graph.
 
         Args:
+            atom_embedding (torch.Tensor): Node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
+            atom_cross_dists (torch.Tensor): Distances to neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
+            atom_edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
             atom_mask (torch.Tensor): Mask indicating valid atoms of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS).
-            atom_embedding (torch.Tensor): Node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_hidden_dim).
-            atom_cross_dists (torch.Tensor): Distances to neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour).
-            atom_edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour).
-
         Returns:
-            torch.Tensor: Messages of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour, atom_hidden_dim).
+            messages (torch.Tensor): Messages of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours, atom_embedding_dim).
         """
         # Mask invalid nodes and expand encode for neighbors
         atom_embedding = atom_embedding * atom_mask.unsqueeze(-1)
@@ -213,7 +217,7 @@ class AtomMPNN(nn.Module):
         source_features = torch.gather(
             atom_embedding.unsqueeze(2).expand(-1, -1, atom_edge_index.size(-1), -1),
             1,
-            safe_edge_index.unsqueeze(-1).expand(-1, -1, -1, self.atom_hidden_dim)
+            safe_edge_index.unsqueeze(-1).expand(-1, -1, -1, atom_embedding.shape[-1])
         )
 
         # Concatenate source, target, and distance features
@@ -229,18 +233,18 @@ class AtomMPNN(nn.Module):
         return messages
 
     @staticmethod
-    def aggregation(atom_mask: torch.Tensor, atom_embedding: torch.Tensor, messages: torch.Tensor, atom_edge_index: torch.Tensor) -> torch.Tensor:
+    def aggregation(atom_embedding: torch.Tensor, messages: torch.Tensor, atom_edge_index: torch.Tensor, atom_mask: torch.Tensor) -> torch.Tensor:
         """
         Aggregate messages for each node and update node features.
 
         Args:
+            atom_embedding (torch.Tensor): Node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
+            messages (torch.Tensor): Messages of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours, atom_embedding_dim).
+            atom_edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
             atom_mask (torch.Tensor): Mask indicating valid atoms of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS).
-            atom_embedding (torch.Tensor): Node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_hidden_dim).
-            messages (torch.Tensor): Messages of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour, atom_hidden_dim).
-            atom_edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour).
 
         Returns:
-            torch.Tensor: Updated node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_hidden_dim).
+            torch.Tensor: Updated node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
         """
         # Compute the sum of messages for each target node
         message_sum = torch.sum(messages, dim=2)
@@ -259,51 +263,50 @@ class AtomMPNN(nn.Module):
         updated_atom_embedding = updated_atom_embedding * atom_mask.unsqueeze(-1)
         return updated_atom_embedding
 
-    def forward(self, atom_embedding: torch.Tensor, atom_mask: torch.Tensor, atom_cross_dists: torch.Tensor, atom_edge_index: torch.Tensor) -> \
-    tuple[Tensor, Tensor, Tensor, Tensor]:
+    def forward(self, atom_embedding: torch.Tensor, atom_cross_dists: torch.Tensor, atom_edge_index: torch.Tensor, atom_mask: torch.Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """
         Forward pass of the AtomMPNN module.
 
         Args:
             atom_mask (torch.Tensor): Mask indicating valid atoms of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS).
-            atom_embedding (torch.Tensor): Node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_hidden_dim).
-            atom_cross_dists (torch.Tensor): Distances to neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour).
-            atom_edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour).
+            atom_embedding (torch.Tensor): Node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
+            atom_cross_dists (torch.Tensor): Distances to neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
+            atom_edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
 
         Returns:
             Tuple[Tensor, Tensor, Tensor, Tensor]:
-                - atom_embedding: Updated node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_hidden_dim).
+                - atom_embedding: Updated node features of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
+                - atom_cross_dists: Distances to neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
+                - atom_edge_index: Indices of neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbours).
                 - atom_mask: Mask indicating valid atoms of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS).
-                - atom_cross_dists: Distances to neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour).
-                - atom_edge_index: Indices of neighbors of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, num_atom_neighbour).
         """
-        messages = self.message(atom_mask, atom_embedding, atom_cross_dists, atom_edge_index)
-        atom_embedding = self.aggregation(atom_mask, atom_embedding, messages, atom_edge_index)
+        messages = self.message(atom_embedding, atom_cross_dists, atom_edge_index, atom_mask)
+        atom_embedding = self.aggregation(atom_embedding, messages, atom_edge_index, atom_mask)
         atom_embedding = self.graph_norm(atom_embedding, atom_mask)
-        return atom_embedding, atom_mask, atom_cross_dists, atom_edge_index
+        return atom_embedding, atom_cross_dists, atom_edge_index, atom_mask
 
 
 class AtomPooling(nn.Module):
-    def __init__(self, raw_dim: int, atom_hidden_dim: int, num_layers: int, dropout: float):
+    def __init__(self, raw_dim: int, atom_pooling_hidden_dim: int, num_layers: int, dropout: float):
         """
         Args:
             raw_dim (int): Dimension of the raw residue-level features.
-            atom_hidden_dim (int): Dimension of the hidden layers.
+            atom_pooling_hidden_dim (int): Dimension of the hidden layers.
             num_layers (int): Number of linear layers for computing weights.
             dropout (float): Dropout rate for regularization.
         """
         super().__init__()
         self.num_layers = num_layers
-        self.atom_hidden_dim = atom_hidden_dim
+        self.atom_pooling_hidden_dim = atom_pooling_hidden_dim
 
         layers = []
         input_dim = raw_dim
         for _ in range(num_layers - 1):
-            layers.append(nn.Linear(input_dim, atom_hidden_dim))
+            layers.append(nn.Linear(input_dim, atom_pooling_hidden_dim))
             layers.append(nn.GELU())
             layers.append(nn.Dropout(dropout))
-            input_dim = atom_hidden_dim
-        layers.append(nn.Linear(atom_hidden_dim, NUM_MAIN_SEQ_ATOMS))
+            input_dim = atom_pooling_hidden_dim
+        layers.append(nn.Linear(atom_pooling_hidden_dim, NUM_MAIN_SEQ_ATOMS))
         self.weight_layers = nn.Sequential(*layers)
 
     def forward(self, atom_embedding: torch.Tensor, atom_mask: torch.Tensor, raw: torch.Tensor) -> torch.Tensor:
@@ -333,17 +336,17 @@ class AtomPooling(nn.Module):
 
 class ResFeature(nn.Module):
     def __init__(self,
-                 num_neighbour: int,
+                 num_neighbours: int,
                  num_inside_dist_atoms: int = NUM_MAIN_SEQ_ATOMS,
                  num_inside_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_inside_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS-1,
                  num_cross_dist_atoms: int = NUM_MAIN_SEQ_ATOMS,
                  num_cross_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_cross_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
-                 atom_pooling_hidden_dim: int = 32,
-                 atom_embedding_dim: int = 32,
-                 res_embedding_dim: int = 32,
-                 res_edge_embedding_dim: int = 32,
+                 atom_pooling_hidden_dim: int = DEFAULT_HIDDEN_DIM,
+                 atom_embedding_dim: int = DEFAULT_HIDDEN_DIM,
+                 res_embedding_dim: int = DEFAULT_HIDDEN_DIM,
+                 res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  num_atom_pooling_layers: int = 2,
                  num_layers: int = 2,
                  num_edge_layers: int = 2,
@@ -351,7 +354,7 @@ class ResFeature(nn.Module):
         """
         Residue-level feature extraction module.
         Args:
-            num_neighbour (int): Number of neighbors for each residue.
+            num_neighbours (int): Number of neighbors for each residue.
             num_inside_dist_atoms (int): Number of atoms for distance calculation.
             num_inside_angle_atoms (int): Number of atoms for angle calculation.
             num_inside_dihedral_atoms (int): Number of atoms for dihedral angle calculation.
@@ -368,25 +371,23 @@ class ResFeature(nn.Module):
             dropout (float): Dropout rate for regularization.
         """
         super().__init__()
-        self.num_neighbour = num_neighbour
-        assert num_inside_dist_atoms >= 2, "num_inside_dist_atoms must be at least 2 for distance calculation."
+        self.num_neighbours = num_neighbours
+        assert num_inside_dist_atoms >= 2, f"num_inside_dist_atoms({num_inside_dist_atoms}) must be at least 2 for distance calculation."
         self.num_inside_dist_atoms = num_inside_dist_atoms
-        assert num_inside_angle_atoms >= 3, "num_inside_angle_atoms must be at least 3 for angle calculation."
+        assert num_inside_angle_atoms >= 3, f"num_inside_angle_atoms({num_inside_angle_atoms}) must be at least 3 for angle calculation."
         self.num_inside_angle_atoms = num_inside_angle_atoms
-        assert num_inside_dihedral_atoms >= 4, "num_inside_dihedral_atoms must be at least 4 for dihedral calculation."
+        assert num_inside_dihedral_atoms >= 4, f"num_inside_dihedral_atoms({num_inside_dihedral_atoms}) must be at least 4 for dihedral calculation."
         self.num_inside_dihedral_atoms = num_inside_dihedral_atoms
-        assert num_cross_dist_atoms >= 2, "num_cross_dist_atoms must be at least 2 for cross distance calculation."
+        assert num_cross_dist_atoms >= 2, f"num_cross_dist_atoms({num_cross_dist_atoms}) must be at least 2 for cross distance calculation."
         self.num_cross_dist_atoms = num_cross_dist_atoms
-        assert num_cross_angle_atoms >= 3, "num_cross_angle_atoms must be at least 3 for cross angle calculation."
+        assert num_cross_angle_atoms >= 3, f"num_cross_angle_atoms({num_cross_angle_atoms}) must be at least 3 for cross angle calculation."
         self.num_cross_angle_atoms = num_cross_angle_atoms
-        assert num_cross_dihedral_atoms >= 4, "num_cross_dihedral_atoms must be at least 4 for cross dihedral calculation."
+        assert num_cross_dihedral_atoms >= 4, f"num_cross_dihedral_atoms({num_cross_dihedral_atoms}) must be at least 4 for cross dihedral calculation."
         self.num_cross_dihedral_atoms = num_cross_dihedral_atoms
         raw_dim = num_inside_dist_atoms - 1 + num_inside_angle_atoms - 2 + num_inside_dihedral_atoms - 3
-        raw_edge_dim = (num_cross_dist_atoms * (num_cross_dist_atoms - 1) // 2 +
-                             (num_cross_angle_atoms - 1) * (num_cross_angle_atoms - 2) // 2 +
-                             (num_cross_dihedral_atoms - 2) * (num_cross_dihedral_atoms - 3) // 2)
+        raw_edge_dim = num_cross_dist_atoms ** 2 + (num_cross_angle_atoms - 1) ** 2 + (num_cross_dihedral_atoms - 2) ** 2
         self.atom_pooling = AtomPooling(raw_dim=raw_dim,
-                                        atom_hidden_dim=atom_pooling_hidden_dim,
+                                        atom_pooling_hidden_dim=atom_pooling_hidden_dim,
                                         num_layers=num_atom_pooling_layers,
                                         dropout=dropout)
 
@@ -408,16 +409,16 @@ class ResFeature(nn.Module):
             input_dim = res_edge_embedding_dim
         self.res_edge_embedding_layers = nn.Sequential(*layers)
 
-    def _get_res_graph(self, coords: torch.Tensor, mask: torch.Tensor) -> Tensor:
+    def _get_res_graph(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
-        Generate residue-level graph structure.
+        Generate residue-level graph structure without including the node itself as a neighbor.
 
         Args:
             coords (torch.Tensor): Residue-level coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
             mask (torch.Tensor): Residue-level mask of shape (batch_size, max_len).
 
         Returns:
-            edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len, num_neighbour).
+            edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len, num_neighbours).
         """
         batch_size, max_len, num_atoms, _ = coords.shape
 
@@ -426,33 +427,76 @@ class ResFeature(nn.Module):
 
         # Compute pairwise distances between residues
         d_coords = avg_coords.unsqueeze(1) - avg_coords.unsqueeze(2)  # Shape: (batch_size, max_len, max_len, 3)
-        distances = torch.sqrt(torch.sum(d_coords ** 2, dim=-1) + 1e-6)  # Shape: (batch_size, max_len, max_len)
+        distances = torch.sqrt(torch.sum(d_coords ** 2, dim=-1) + SEPS)  # Shape: (batch_size, max_len, max_len)
 
         # Mask invalid distances (real residues to padding residues)
         residue_mask_2d = mask.unsqueeze(1) * mask.unsqueeze(2)  # Shape: (batch_size, max_len, max_len)
-        distances = distances * residue_mask_2d + (1.0 - residue_mask_2d) * 1e6
+        distances = distances * residue_mask_2d + (1.0 - residue_mask_2d) * LEPS
+
+        # Exclude self-loops by setting diagonal elements to a large value
+        diagonal_mask = torch.eye(max_len, device=distances.device).unsqueeze(0)  # Shape: (1, max_len, max_len)
+        distances = distances + diagonal_mask * LEPS
 
         # Select k-nearest neighbors
-        dist_neighbour, edge_index = torch.topk(distances, min(self.num_neighbour, max_len), dim=-1, largest=False)
+        dist_neighbour, edge_index = torch.topk(distances, self.num_neighbours, dim=-1, largest=False)
 
-        # Handle cases where num_neighbour exceeds the number of valid residues
-        if self.num_neighbour > max_len:
-            padding_size = self.num_neighbour - max_len
-            dist_neighbour = torch.cat(
-                [dist_neighbour, torch.full((batch_size, max_len, padding_size), 1e6, device=distances.device)],
-                dim=-1
-            )
-            edge_index = torch.cat(
-                [edge_index,
-                 torch.full((batch_size, max_len, padding_size), -1, device=distances.device, dtype=torch.long)],
-                dim=-1
-            )
+        # Create a tensor of indices for comparison
+        indices = torch.arange(max_len, device=edge_index.device).view(1, -1, 1)  # Shape: (1, max_len, 1)
 
-        # Set all neighbors of padding residues to -1 and distances to 1e6
+        # Replace self-loops (where edge_index == indices) with -1
+        edge_index = torch.where(edge_index == indices, -1, edge_index)
+
+        # Handle cases where num_neighbours exceeds the number of valid residues
+        valid_neighbors = (residue_mask_2d.sum(dim=-1) - 1).clamp(min=0)  # Exclude self
+        padding_mask = valid_neighbors.unsqueeze(-1) < torch.arange(self.num_neighbours, device=distances.device)
+
+        edge_index = edge_index.masked_fill(padding_mask, -1)  # Fill remaining neighbors with -1
+
+        # Set all neighbors of padding residues to -1
         padding_residue_mask = (mask == 0).unsqueeze(-1)  # (batch_size, max_len, 1)
         edge_index = edge_index.masked_fill(padding_residue_mask, -1)
 
         return edge_index
+
+    @staticmethod
+    def _gather_neighbours(coords: torch.Tensor, edge_index: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Gather neighbor coordinates based on edge indices and form a tensor of shape
+        (batch_size, max_len, num_neighbours, NUM_MAIN_SEQ_ATOMS, 3).
+
+        Args:
+            coords (torch.Tensor): Residue-level coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
+            edge_index (torch.Tensor): Edge indices of shape (batch_size, max_len, num_neighbours).
+            mask (torch.Tensor): Residue-level mask of shape (batch_size, max_len).
+
+        Returns:
+            neighbours_coords (torch.Tensor): Tensor of shape (batch_size, max_len, num_neighbours, NUM_MAIN_SEQ_ATOMS, 3).
+        """
+        batch_size, max_len, num_atoms, _ = coords.shape
+        num_neighbours = edge_index.shape[-1]
+
+        # Replace -1 in edge_index with 0 temporarily
+        safe_edge_index = edge_index.clone()
+        safe_edge_index[safe_edge_index == -1] = 0
+
+        # Gather neighbor coordinates
+        neighbours_coords = torch.gather(
+            coords.unsqueeze(2).expand(-1, -1, num_neighbours, -1, -1),
+            # Shape: (batch_size, max_len, num_neighbours, NUM_MAIN_SEQ_ATOMS, 3)
+            dim=1,
+            index=safe_edge_index.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, num_atoms, 3)
+            # Shape: (batch_size, max_len, num_neighbours, NUM_MAIN_SEQ_ATOMS, 3)
+        )
+
+        # Mask invalid neighbors (where edge_index == -1)
+        invalid_mask = (edge_index == -1).unsqueeze(-1).unsqueeze(-1)  # Shape: (batch_size, max_len, num_neighbours, 1, 1)
+        neighbours_coords = neighbours_coords.masked_fill(invalid_mask, LEPS)
+
+        # Mask padding nodes and their neighbors
+        padding_mask = (mask == 0).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)  # Shape: (batch_size, max_len, 1, 1, 1)
+        neighbours_coords = neighbours_coords.masked_fill(padding_mask, LEPS)
+
+        return neighbours_coords
 
     def _inside_dists(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
@@ -463,25 +507,26 @@ class ResFeature(nn.Module):
             mask (torch.Tensor): Mask of shape (batch_size, max_len).
 
         Returns:
-            inside_dists (torch.Tensor): Pairwise distances of shape (batch_size, max_len, num_inside_dist_atoms * (num_inside_dist_atoms - 1) / 2).
+            inside_dists (torch.Tensor): Pairwise distances of shape (batch_size, max_len, num_inside_dist_atoms - 1).
         """
         batch_size, max_len, num_atoms, _ = coords.shape
-        assert num_atoms >= self.num_inside_dist_atoms, "NUM_MAIN_SEQ_ATOMS must be at least num_inside_dist_atoms for distance calculation."
+        assert num_atoms >= self.num_inside_dist_atoms, f"NUM_MAIN_SEQ_ATOMS({num_atoms}) must be at least num_inside_angle_atoms({self.num_inside_angle_atoms}) for angle calculation."
 
-        coords = coords[:, :, :self.num_inside_dist_atoms, :]
-        # Compute pairwise distances between all atoms
-        d_coords = coords.unsqueeze(-2) - coords.unsqueeze(-3)  # Shape: (batch_size, max_len, num_atoms, num_atoms, 3)
-        distances = torch.sqrt(torch.sum(d_coords ** 2, dim=-1) + 1e-6)  # Shape: (batch_size, max_len, num_atoms, num_atoms)
+        # Truncate to the first `num_inside_dist_atoms`
+        coords = coords[:, :, :self.num_inside_dist_atoms, :]  # Shape: (batch_size, max_len, num_inside_dist_atoms, 3)
 
-        # Extract the upper triangular part of the distance matrix (excluding the diagonal)
-        triu_indices = torch.triu_indices(num_atoms, num_atoms, offset=1, device=coords.device)
-        inside_dists = distances[:, :, triu_indices[0], triu_indices[1]]  # Shape: (batch_size, max_len, num_atoms * (num_atoms - 1) / 2)
+        # Compute vectors between adjacent atoms
+        vecs = coords[:, :, 1:] - coords[:, :, :-1]  # Shape: (batch_size, max_len, num_inside_dist_atoms-1, 3)
 
-        # Mask invalid residues (set distances to zero for padding residues)
-        inside_dists = inside_dists * mask.unsqueeze(-1)
+        # Compute distances
+        inside_dists = torch.sqrt(
+            torch.sum(vecs ** 2, dim=-1) + SEPS)  # Shape: (batch_size, max_len, num_inside_dist_atoms-1)
+
+        # Replace distances for padding residues with 1e6
+        padding_mask = (mask == 0).unsqueeze(-1)  # Shape: (batch_size, max_len, 1)
+        inside_dists = inside_dists.masked_fill(padding_mask, 1e6)
 
         return inside_dists
-
 
     def _inside_angles(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
@@ -495,7 +540,7 @@ class ResFeature(nn.Module):
             inside_angles (torch.Tensor): Cosine values of angles of shape (batch_size, max_len, num_inside_angle_atoms-2).
         """
         batch_size, max_len, num_atoms, _ = coords.shape
-        assert num_atoms >= self.num_inside_angle_atoms, "NUM_MAIN_SEQ_ATOMS must be at least num_inside_angle_atoms for angle calculation."
+        assert num_atoms >= self.num_inside_angle_atoms, f"NUM_MAIN_SEQ_ATOMS({num_atoms}) must be at least num_inside_angle_atoms({self.num_inside_angle_atoms}) for angle calculation."
 
         # Truncate to the first six atoms
         coords = coords[:, :, :self.num_inside_angle_atoms, :]  # Shape: (batch_size, max_len, num_inside_angle_atoms, 3)
@@ -510,7 +555,7 @@ class ResFeature(nn.Module):
         norms = torch.norm(vecs, dim=-1)  # Shape: (batch_size, max_len, num_inside_angle_atoms-1)
 
         # Compute cosine values for the angles
-        inside_angles = dot_products / (norms[:, :, :-1] * norms[:, :, 1:] + 1e-6)  # Shape: (batch_size, max_len, num_inside_angle_atoms-2)
+        inside_angles = dot_products / (norms[:, :, :-1] * norms[:, :, 1:] + SEPS)  # Shape: (batch_size, max_len, num_inside_angle_atoms-2)
 
         # Mask invalid residues (set cosine values to zero for padding residues)
         inside_angles = inside_angles * mask.unsqueeze(-1)
@@ -526,194 +571,158 @@ class ResFeature(nn.Module):
             mask (torch.Tensor): Mask of shape (batch_size, max_len).
 
         Returns:
-            inside_dihedral_angles (torch.Tensor): Dihedral angles of shape (batch_size, max_len, num_inside_dihedral_atoms-3).
+            inside_dihedrals (torch.Tensor): Cosine of dihedral angles of shape (batch_size, max_len, num_inside_dihedral_atoms-3).
         """
         batch_size, max_len, num_atoms, _ = coords.shape
-        assert num_atoms >= self.num_inside_dihedral_atoms, "NUM_MAIN_SEQ_ATOMS must be at least num_inside_dihedral_atoms for dihedral calculation."
+        assert num_atoms >= self.num_inside_dihedral_atoms, f"NUM_MAIN_SEQ_ATOMS({num_atoms}) must be at least num_inside_dihedral_atoms({self.num_inside_dihedral_atoms}) for dihedral calculation."
 
         # Truncate to the first num_inside_dihedral_atoms
         coords = coords[:, :, :self.num_inside_dihedral_atoms, :]  # Shape: (batch_size, max_len, num_inside_dihedral_atoms, 3)
 
         # Compute vectors between consecutive atoms
-        vec1 = coords[:, :, 1:] - coords[:, :, :-1]  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-1, 3)
-        vec2 = vec1[:, :, 1:]  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-2, 3)
-        vec1 = vec1[:, :, :-1]  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-2, 3)
+        vec1 = F.normalize(coords[:, :, 1:, :] - coords[:, :, :-1, :], dim=-1, eps=SEPS)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-1, 3)
+        vec2 = vec1[:, :, 1:, :]  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-2, 3)
+        vec1 = vec1[:, :, :-1, :]  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-2, 3)
 
-        # Compute normal vectors for planes
-        normal1 = torch.cross(vec1, vec2, dim=-1)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-2, 3)
-        normal2 = torch.cross(vec2, vec1[:, :, 1:], dim=-1)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-3, 3)
-
-        # Normalize the normal vectors
-        normal1 = normal1 / (torch.norm(normal1, dim=-1, keepdim=True) + 1e-6)
-        normal2 = normal2 / (torch.norm(normal2, dim=-1, keepdim=True) + 1e-6)
-
-        # Compute cosine and sine of dihedral angles
-        cos_angle = (normal1[:, :, 1:] * normal2).sum(dim=-1)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-3)
-        sin_angle = torch.cross(normal1[:, :, 1:], normal2,dim=-1)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-3)
-        sin_angle = (sin_angle * vec2[:, :, 1:]).sum(dim=-1)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-3)
-
-        # Compute dihedral angles using atan2
-        inside_dihedral_angles = torch.atan2(sin_angle, cos_angle)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-3)
-
-        # Mask invalid residues (set dihedral angles to zero for padding residues)
-        inside_dihedral_angles = inside_dihedral_angles * mask.unsqueeze(-1)
-
-        return inside_dihedral_angles
+        normal = F.normalize(torch.linalg.cross(vec1, vec2), dim=-1, eps=SEPS) # Shape: (batch_size, max_len, num_inside_dihedral_atoms-2, 3)
+        inside_dihedrals = (normal[:, :, 1:, :] * normal[:, :, :-1, :]).sum(dim=-1)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-3)
+        inside_dihedrals = inside_dihedrals * mask.unsqueeze(-1)
+        return inside_dihedrals
 
     def _cross_dists(self, coords: torch.Tensor, mask: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         """
-        Compute pairwise distances between atoms of a residue and its neighbors.
+        Compute pairwise distances between `num_cross_dist_atoms` atoms of the central residue
+        and its neighboring residues, with special handling for padding nodes.
 
         Args:
-            coords (torch.Tensor): Coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
-            mask (torch.Tensor): Mask of shape (batch_size, max_len).
-            edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len, num_neighbour).
+            coords (torch.Tensor): Tensor of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3) containing atom coordinates.
+            mask (torch.Tensor): Tensor of shape (batch_size, max_len) indicating valid residues.
+            edge_index (torch.Tensor): Tensor of shape (batch_size, max_len, num_neighbour) containing neighbor indices.
 
         Returns:
-            inside_cross_dists (torch.Tensor): Cross distances of shape (batch_size, max_len, num_neighbour, num_cross_dist_atoms * (num_cross_dist_atoms - 1) / 2).
+            cross_dists (torch.Tensor): Tensor of shape (batch_size, max_len, num_neighbour, num_cross_dist_atoms ** 2) containing pairwise distances.
         """
-        assert coords.shape[2] >= self.num_cross_dist_atoms, "NUM_MAIN_SEQ_ATOMS must be at least num_cross_dist_atoms for cross distance calculation."
-        coords = coords[:, :, :self.num_cross_dist_atoms, :]  # Shape: (batch_size, max_len, num_cross_dist_atoms, 3)
-
         batch_size, max_len, num_atoms, _ = coords.shape
-
         num_neighbour = edge_index.shape[-1]
+        num_cross_dist_atoms = self.num_cross_dist_atoms
 
-        # Gather neighbor coordinates using edge_index
-        safe_edge_index = edge_index.clone()
-        safe_edge_index[safe_edge_index == -1] = 0  # Replace invalid indices with 0
-        neighbor_coords = torch.gather(
-            coords.unsqueeze(2).expand(-1, -1, num_neighbour, -1, -1),
-            1,
-            safe_edge_index.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, num_atoms, 3)
-        )  # Shape: (batch_size, max_len, num_neighbour, NUM_MAIN_SEQ_ATOMS, 3)
+        # Truncate to the first `num_cross_dist_atoms`
+        coords = coords[:, :, :num_cross_dist_atoms, :]  # Shape: (batch_size, max_len, num_cross_dist_atoms, 3)
 
-        # Compute pairwise distances between atoms of the residue and its neighbors
-        d_coords = coords.unsqueeze(2).unsqueeze(-2) - neighbor_coords.unsqueeze(
-            -3)  # Shape: (batch_size, max_len, num_neighbour, NUM_MAIN_SEQ_ATOMS, NUM_MAIN_SEQ_ATOMS, 3)
-        distances = torch.sqrt(torch.sum(d_coords ** 2,dim=-1) + 1e-6)  # Shape: (batch_size, max_len, num_neighbour, NUM_MAIN_SEQ_ATOMS, NUM_MAIN_SEQ_ATOMS)
+        # Replace invalid indices (-1) in edge_index with 0 for gathering
+        edge_index = edge_index.clone()
+        invalid_mask = edge_index == -1
+        edge_index[invalid_mask] = 0
 
-        # Extract the upper triangular part of the distance matrix (excluding the diagonal)
-        triu_indices = torch.triu_indices(num_atoms, num_atoms, offset=1, device=coords.device)
-        cross_dists = distances[:, :, :, triu_indices[0], triu_indices[1]]  # Shape: (batch_size, max_len, num_neighbour, NUM_MAIN_SEQ_ATOMS * (NUM_MAIN_SEQ_ATOMS - 1) / 2)
+        # Gather neighbor coordinates
+        neighbour_coords = self._gather_neighbours(coords, edge_index, mask)  # Shape: (batch_size, max_len, num_neighbour, num_cross_dist_atoms, 3)
+        # Compute pairwise distances
+        central_coords = coords.unsqueeze(2)  # Shape: (batch_size, max_len, 1, num_cross_dist_atoms, 3)
+        diffs = central_coords.unsqueeze(4) - neighbour_coords.unsqueeze(3)  # Shape: (batch_size, max_len, num_neighbour, num_cross_dist_atoms, num_cross_dist_atoms, 3)
+        dists = torch.sqrt((diffs ** 2).sum(dim=-1) + SEPS)  # Shape: (batch_size, max_len, num_neighbour, num_cross_dist_atoms, num_cross_dist_atoms)
 
-        residue_mask = mask.unsqueeze(-1).unsqueeze(-1)  # Shape: (batch_size, max_len, 1, 1)
-        neighbor_mask = (edge_index != -1).unsqueeze(-1)  # Shape: (batch_size, max_len, num_neighbour, 1)
+        cross_dists = dists.view(batch_size, max_len, num_neighbour, -1)
 
-        invalid_mask = (residue_mask * neighbor_mask) == 0
-        inside_cross_dists = cross_dists.masked_fill(invalid_mask, 1e6)
+        valid_mask = mask.unsqueeze(-1).unsqueeze(-1) * (~invalid_mask).unsqueeze(-1)  # Shape: (batch_size, max_len, num_neighbour, 1)
+        cross_dists = cross_dists * valid_mask + (1 - valid_mask) * LEPS
 
-        return inside_cross_dists
+        return cross_dists
 
     def _cross_angles(self, coords: torch.Tensor, mask: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         """
-        Compute cosine of angles formed by every two consecutive vectors in each residue and its neighbors.
-
+        Compute the cosine of angles formed by every three consecutive atoms in each residue
         Args:
             coords (torch.Tensor): Coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
             mask (torch.Tensor): Mask of shape (batch_size, max_len).
-            edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len, num_neighbour).
-
+            edge_index (torch.Tensor): Edge indices of shape (batch_size, max_len, num_neighbours).
         Returns:
-            cross_angles (torch.Tensor): Cosine of angles of shape (batch_size, max_len, num_neighbour, (num_cross_dist_atoms - 1) * (num_cross_dist_atoms - 2) / 2).
+            cross_angles (torch.Tensor): Cosine values of angles of shape (batch_size, max_len, num_neighbours, (num_cross_angle_atoms-1) ** 2).
         """
-        assert coords.shape[2] >= self.num_cross_angle_atoms, "NUM_MAIN_SEQ_ATOMS must be at least num_cross_angle_atoms for angle calculation."
-        coords = coords[:, :, :self.num_cross_angle_atoms, :]  # Truncate to the first num_cross_angle_atoms
-
         batch_size, max_len, num_atoms, _ = coords.shape
         num_neighbour = edge_index.shape[-1]
+        num_cross_angles_atoms = self.num_cross_angle_atoms
 
-        # Gather neighbor coordinates using edge_index
-        safe_edge_index = edge_index.clone()
-        safe_edge_index[safe_edge_index == -1] = 0  # Replace invalid indices with 0
-        neighbor_coords = torch.gather(
-            coords.unsqueeze(2).expand(-1, -1, num_neighbour, -1, -1),
-            1,
-            safe_edge_index.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, num_atoms, 3)
-        )  # Shape: (batch_size, max_len, num_neighbour, num_atoms, 3)
+        # Truncate to the first `num_cross_angles_atoms`
+        coords = coords[:, :, :num_cross_angles_atoms, :]  # Shape: (batch_size, max_len, num_cross_angles_atoms, 3)
 
-        # Compute vectors between consecutive atoms
-        vectors = neighbor_coords[:, :, :, 1:] - neighbor_coords[:, :, :,
-                                                 :-1]  # Shape: (batch_size, max_len, num_neighbour, num_atoms-1, 3)
+        # Replace invalid indices (-1) in edge_index with 0 for gathering
+        edge_index = edge_index.clone()
+        invalid_mask = edge_index == -1
+        edge_index[invalid_mask] = 0
 
-        # Compute pairwise cosine of angles
-        vec1 = vectors.unsqueeze(-2)  # Shape: (batch_size, max_len, num_neighbour, num_atoms-2, 1, 3)
-        vec2 = vectors.unsqueeze(-3)  # Shape: (batch_size, max_len, num_neighbour, 1, num_atoms-2, 3)
-        dot_product = (vec1 * vec2).sum(dim=-1)  # Shape: (batch_size, max_len, num_neighbour, num_atoms-2, num_atoms-2)
-        norm1 = torch.norm(vec1, dim=-1)  # Shape: (batch_size, max_len, num_neighbour, num_atoms-2, 1)
-        norm2 = torch.norm(vec2, dim=-1)  # Shape: (batch_size, max_len, num_neighbour, 1, num_atoms-2)
-        cosine_angles = dot_product / (
-                    norm1 * norm2 + 1e-6)  # Shape: (batch_size, max_len, num_neighbour, num_atoms-2, num_atoms-2)
+        # Gather neighbor coordinates
+        neighbour_coords = self._gather_neighbours(coords, edge_index,mask)  # Shape: (batch_size, max_len, num_neighbour, num_cross_angles_atoms, 3)
 
-        # Extract upper triangular part of the cosine matrix
-        triu_indices = torch.triu_indices(num_atoms - 1, num_atoms - 1, offset=1, device=coords.device)
-        cross_angles = cosine_angles[:, :, :, triu_indices[0], triu_indices[1]]  # Shape: (batch_size, max_len, num_neighbour, (num_atoms-1)*(num_atoms-2)/2)
+        # Compute vectors for sequential edges
+        central_vectors = coords[:, :, 1:, :] - coords[:, :, :-1, :]  # Shape: (batch_size, max_len, num_cross_angles_atoms-1, 3)
+        neighbour_vectors = neighbour_coords[:, :, :, 1:, :] - neighbour_coords[:, :, :, :-1, :]  # Shape: (batch_size, max_len, num_neighbour, num_cross_angles_atoms-1, 3)
 
-        # Mask invalid residues and neighbors
-        residue_mask = mask.unsqueeze(-1).unsqueeze(-1)  # Shape: (batch_size, max_len, 1, 1)
-        neighbor_mask = (edge_index != -1).unsqueeze(-1)  # Shape: (batch_size, max_len, num_neighbour, 1)
-        valid_mask = residue_mask * neighbor_mask
+        # Normalize vectors
+        central_norm = F.normalize(central_vectors, dim=-1)  # Shape: (batch_size, max_len, num_cross_angles_atoms-1, 3)
+        neighbour_norm = F.normalize(neighbour_vectors, dim=-1)  # Shape: (batch_size, max_len, num_neighbour, num_cross_angles_atoms-1, 3)
+
+
+        central_norm = central_norm.unsqueeze(2).unsqueeze(4)  # Shape: (batch_size, max_len, 1, num_cross_angles_atoms-1, 1, 3)
+        neighbour_norm = neighbour_norm.unsqueeze(3)  # Shape: (batch_size, max_len, num_neighbour, 1, num_cross_angles_atoms-1, 3)
+
+        dot_products = (central_norm * neighbour_norm).sum(dim=-1)  # Shape: (batch_size, max_len, num_neighbour, num_cross_angles_atoms-1, num_cross_angles_atoms-1)
+
+        cross_angles = dot_products.view(batch_size, max_len, num_neighbour, -1)
+
+        valid_mask = mask.unsqueeze(-1).unsqueeze(-1) * (~invalid_mask).unsqueeze(-1)  # Shape: (batch_size, max_len, num_neighbour, 1)
         cross_angles = cross_angles * valid_mask
 
         return cross_angles
 
     def _cross_dihedrals(self, coords: torch.Tensor, mask: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         """
-        Compute cosine of dihedral angles formed by every four consecutive atoms in each residue and its neighbors.
-
+        Compute the cosine of dihedral angles formed by every four consecutive atoms in each residue
         Args:
             coords (torch.Tensor): Coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
             mask (torch.Tensor): Mask of shape (batch_size, max_len).
-            edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len, num_neighbour).
-
+            edge_index (torch.Tensor): Edge indices of shape (batch_size, max_len, num_neighbours).
         Returns:
-            cross_dihedral_angles (torch.Tensor): Cosine of dihedral angles of shape (batch_size, max_len, num_neighbour, (num_cross_dist_atoms - 2) * (num_cross_dist_atoms - 3) / 2).
+            cross_dihedrals (torch.Tensor): Cosine values of dihedral angles of shape (batch_size, max_len, num_neighbours, (num_cross_dihedral_atoms-2) ** 2).
         """
-        assert coords.shape[
-                   2] >= self.num_cross_dihedral_atoms, "NUM_MAIN_SEQ_ATOMS must be at least num_cross_dihedral_atoms for dihedral calculation."
-        coords = coords[:, :, :self.num_cross_dihedral_atoms, :]  # Truncate to the first num_cross_dihedral_atoms
-
         batch_size, max_len, num_atoms, _ = coords.shape
         num_neighbour = edge_index.shape[-1]
+        num_cross_dihedrals = self.num_cross_dihedral_atoms
 
-        # Gather neighbor coordinates using edge_index
-        safe_edge_index = edge_index.clone()
-        safe_edge_index[safe_edge_index == -1] = 0  # Replace invalid indices with 0
-        neighbor_coords = torch.gather(
-            coords.unsqueeze(2).expand(-1, -1, num_neighbour, -1, -1),
-            1,
-            safe_edge_index.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, num_atoms, 3)
-        )  # Shape: (batch_size, max_len, num_neighbour, num_atoms, 3)
+        coords = coords[:, :, :num_cross_dihedrals, :]  # Shape: (batch_size, max_len, num_cross_dihedrals, 3)
 
-        # Compute vectors between consecutive atoms
-        vec1 = neighbor_coords[:, :, :, 1:] - neighbor_coords[:, :, :,:-1]  # Shape: (batch_size, max_len, num_neighbour, num_atoms-1, 3)
-        vec2 = vec1[:, :, :, 1:]  # Shape: (batch_size, max_len, num_neighbour, num_atoms-2, 3)
-        vec1 = vec1[:, :, :, :-1]  # Shape: (batch_size, max_len, num_neighbour, num_atoms-2, 3)
+        edge_index = edge_index.clone()
+        invalid_mask = edge_index == -1
+        edge_index[invalid_mask] = 0
 
-        # Compute normal vectors for planes
-        normal1 = torch.cross(vec1, vec2, dim=-1)  # Shape: (batch_size, max_len, num_neighbour, num_atoms-2, 3)
-        normal2 = torch.cross(vec2, vec1[:, :, :, 1:],dim=-1)  # Shape: (batch_size, max_len, num_neighbour, num_atoms-3, 3)
+        neighbour_coords = self._gather_neighbours(coords, edge_index, mask)  # Shape: (batch_size, max_len, num_neighbour, num_cross_dihedrals, 3)
 
-        # Normalize the normal vectors
-        normal1 = normal1 / (torch.norm(normal1, dim=-1, keepdim=True) + 1e-6)
-        normal2 = normal2 / (torch.norm(normal2, dim=-1, keepdim=True) + 1e-6)
+        central_vectors = coords[:, :, 1:, :] - coords[:, :, :-1, :]  # Shape: (batch_size, max_len, num_cross_dihedrals-1, 3)
+        neighbour_vectors = neighbour_coords[:, :, :, 1:, :] - neighbour_coords[:, :, :, :-1, :]  # Shape: (batch_size, max_len, num_neighbour, num_cross_dihedrals-1, 3)
 
-        # Compute cosine of dihedral angles
-        cos_angle = (normal1[:, :, :, 1:] * normal2).sum(dim=-1)  # Shape: (batch_size, max_len, num_neighbour, num_atoms-3)
+        central_normals = F.normalize(
+            torch.cross(central_vectors[:, :, :-1, :], central_vectors[:, :, 1:, :], dim=-1),
+            dim=-1,
+            eps=SEPS
+        )  # Shape: (batch_size, max_len, num_cross_dihedrals-2, 3)
+        neighbour_normals = F.normalize(
+            torch.cross(neighbour_vectors[:, :, :, :-1, :], neighbour_vectors[:, :, :, 1:, :], dim=-1),
+            dim=-1,
+            eps=SEPS
+        )  # Shape: (batch_size, max_len, num_neighbour, num_cross_dihedrals-2, 3)
 
-        # Extract upper triangular part of the cosine matrix
-        triu_indices = torch.triu_indices(num_atoms - 2, num_atoms - 2, offset=1, device=coords.device)
-        cross_dihedral_angles = cos_angle[:, :, :, triu_indices[0], triu_indices[1]]  # Shape: (batch_size, max_len, num_neighbour, (num_atoms-2)*(num_atoms-3)/2)
+        central_normals = central_normals.unsqueeze(2).unsqueeze(4)  # Shape: (batch_size, max_len, 1, num_cross_dihedrals-2, 1, 3)
+        neighbour_normals = neighbour_normals.unsqueeze(3)  # Shape: (batch_size, max_len, num_neighbour, 1, num_cross_dihedrals-2, 3)
 
-        # Mask invalid residues and neighbors
-        residue_mask = mask.unsqueeze(-1).unsqueeze(-1)  # Shape: (batch_size, max_len, 1, 1)
-        neighbor_mask = (edge_index != -1).unsqueeze(-1)  # Shape: (batch_size, max_len, num_neighbour, 1)
-        valid_mask = residue_mask * neighbor_mask
-        cross_dihedral_angles = cross_dihedral_angles * valid_mask
+        dot_products = (central_normals * neighbour_normals).sum(dim=-1)  # Shape: (batch_size, max_len, num_neighbour, num_cross_dihedrals-2, num_cross_dihedrals-2)
 
-        return cross_dihedral_angles
+        cross_dihedrals = dot_products.view(batch_size, max_len, num_neighbour, -1)
 
-    def _res_embedding(self, coords: torch.Tensor, mask: torch.Tensor, atom_embedding: torch.Tensor, atom_mask: torch.Tensor) -> torch.Tensor:
+        valid_mask = mask.unsqueeze(-1).unsqueeze(-1) * (~invalid_mask).unsqueeze(-1)  # Shape: (batch_size, max_len, num_neighbour, 1)
+        cross_dihedrals = cross_dihedrals * valid_mask
+
+        return cross_dihedrals
+
+    def _res_embedding(self, coords: torch.Tensor, mask: torch.Tensor, atom_embedding: torch.Tensor) -> torch.Tensor:
         """
         Compute residue-level graph node features.
 
@@ -721,7 +730,6 @@ class ResFeature(nn.Module):
             coords (torch.Tensor): Residue-level coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
             mask (torch.Tensor): Residue-level mask of shape (batch_size, max_len).
             atom_embedding (torch.Tensor): Atom-level embeddings of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
-            atom_mask (torch.Tensor): Atom-level mask of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS).
 
         Returns:
             res_embedding (torch.Tensor): Residue embedding of shape (batch_size, max_len, res_embedding_dim).
@@ -729,12 +737,12 @@ class ResFeature(nn.Module):
         inside_dists = self._inside_dists(coords, mask)  # Shape: (batch_size, max_len, num_inside_dist_atoms * (num_inside_dist_atoms - 1) / 2)
         inside_angles = self._inside_angles(coords, mask)  # Shape: (batch_size, max_len, num_inside_angle_atoms - 2)
         inside_dihedrals = self._inside_dihedrals(coords, mask)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms - 3)
+        atom_mask = mask.unsqueeze(-1).expand(-1, -1, NUM_MAIN_SEQ_ATOMS).reshape(mask.shape[0], -1)
 
         raw = torch.cat([inside_dists, inside_angles, inside_dihedrals], dim=-1)  # Shape: (batch_size, max_len, raw_dim)
-
-        pooled_atom_embedding = self.atom_pooling(atom_embedding, atom_mask, raw)  # Shape: (batch_size, max_len, atom_hidden_dim)
-
+        pooled_atom_embedding = self.atom_pooling(atom_embedding, atom_mask, raw)  # Shape: (batch_size, max_len, atom_embedding_dim)
         res_embedding = self.res_embedding_layers(torch.cat([raw, pooled_atom_embedding],dim=-1))  # Shape: (batch_size, max_len, res_embedding_dim)
+        res_embedding = res_embedding * mask.unsqueeze(-1)
 
         return res_embedding
 
@@ -745,23 +753,33 @@ class ResFeature(nn.Module):
         Args:
             coords (torch.Tensor): Residue-level coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
             mask (torch.Tensor): Residue-level mask of shape (batch_size, max_len).
-            edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len, num_neighbour).
+            edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len, num_neighbours).
 
         Returns:
-            torch.Tensor: Residue edge embedding of shape (batch_size, max_len, num_neighbour, res_edge_embedding_dim).
+            torch.Tensor: Residue edge embedding of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
         """
-        cross_dists = self._cross_dists(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbour, num_cross_dist_atoms * (num_cross_dist_atoms - 1) / 2)
-        cross_angles = self._cross_angles(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbour, (num_cross_angle_atoms - 1) * (num_cross_angle_atoms - 2) / 2)
-        cross_dihedrals = self._cross_dihedrals(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbour, (num_cross_dihedral_atoms - 2) * (num_cross_dihedral_atoms - 3) / 2)
+        # Compute edge features
+        cross_dists = self._cross_dists(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbours, num_cross_dist_atoms * (num_cross_dist_atoms - 1) / 2)
+        cross_angles = self._cross_angles(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbours, (num_cross_angle_atoms - 1) * (num_cross_angle_atoms - 2) / 2)
+        cross_dihedrals = self._cross_dihedrals(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbours, (num_cross_dihedral_atoms - 2) * (num_cross_dihedral_atoms - 3) / 2)
 
-        raw_edge_features = torch.cat([cross_dists, cross_angles, cross_dihedrals], dim=-1)  # Shape: (batch_size, max_len, num_neighbour, raw_edge_dim)
+        # Concatenate raw edge features
+        raw_edge_features = torch.cat([cross_dists, cross_angles, cross_dihedrals], dim=-1)  # Shape: (batch_size, max_len, num_neighbours, raw_edge_dim)
 
-        res_edge_embedding = self.res_edge_embedding_layers(raw_edge_features)  # Shape: (batch_size, max_len, num_neighbour, res_edge_embedding_dim)
+        # Compute edge embeddings
+        res_edge_embedding = self.res_edge_embedding_layers(raw_edge_features)  # Shape: (batch_size, max_len, num_neighbours, res_edge_embedding_dim)
+
+        # Create masks for invalid edges and padding nodes
+        invalid_edge_mask = (edge_index == -1).unsqueeze(-1)  # Shape: (batch_size, max_len, num_neighbours, 1)
+        padding_node_mask = (mask == 0).unsqueeze(-1).unsqueeze(-1)  # Shape: (batch_size, max_len, 1, 1)
+
+        # Set embeddings of invalid edges and padding-related edges to zero
+        res_edge_embedding = res_edge_embedding.masked_fill(invalid_edge_mask, 0.0)
+        res_edge_embedding = res_edge_embedding.masked_fill(padding_node_mask, 0.0)
 
         return res_edge_embedding
 
-    def forward(self, coords: torch.Tensor, mask: torch.Tensor, atom_embedding: torch.Tensor,
-                atom_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, coords: torch.Tensor, mask: torch.Tensor, atom_embedding: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward method to compute residue-level graph embeddings.
 
@@ -769,26 +787,196 @@ class ResFeature(nn.Module):
             coords (torch.Tensor): Residue-level coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
             mask (torch.Tensor): Residue-level mask of shape (batch_size, max_len).
             atom_embedding (torch.Tensor): Atom-level embeddings of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
-            atom_mask (torch.Tensor): Atom-level mask of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS).
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Residue node embeddings, edge embeddings, and edge indices.
         """
         # Generate residue graph edge information
-        edge_index = self._get_res_graph(coords, mask)  # Shape: (batch_size, max_len, num_neighbour)
-
-        # Compute residue node embeddings
-        res_embedding = self._res_embedding(coords, mask, atom_embedding, atom_mask)  # Shape: (batch_size, max_len, res_embedding_dim)
+        edge_index = self._get_res_graph(coords, mask)  # Shape: (batch_size, max_len, num_neighbours)
 
         # Compute residue edge embeddings
-        res_edge_embedding = self._res_edge_embedding(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbour, res_edge_embedding_dim)
+        res_edge_embedding = self._res_edge_embedding(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbours, res_edge_embedding_dim)
+
+        # Compute residue node embeddings
+        res_embedding = self._res_embedding(coords, mask, atom_embedding)  # Shape: (batch_size, max_len, res_embedding_dim)
 
         return res_embedding, res_edge_embedding, edge_index
 
 
 class ResMPNN(nn.Module):
-    def __init__(self):
+    def __init__(self,
+                 res_embedding_dim: int,
+                 res_edge_embedding_dim: int,
+                 num_res_mpnn_layers: int,
+                 num_edge_layers: int,
+                 dropout: float = 0.1):
         super().__init__()
+        self.graph_norm = GraphNormalization(embedding_dim=res_embedding_dim)
+
+        # Message passing layers for node updates
+        layers = []
+        input_dim = res_embedding_dim * 2 + res_edge_embedding_dim
+        for _ in range(num_res_mpnn_layers):
+            layers.append(nn.Linear(input_dim, res_embedding_dim))
+            layers.append(nn.GELU())
+            layers.append(nn.Dropout(dropout))
+            input_dim = res_embedding_dim
+        self.message_layers = nn.Sequential(*layers)
+
+        # Edge update layers
+        layers = []
+        input_dim = res_embedding_dim * 2 + res_edge_embedding_dim
+        for _ in range(num_edge_layers):
+            layers.append(nn.Linear(input_dim, res_edge_embedding_dim))
+            layers.append(nn.GELU())
+            layers.append(nn.Dropout(dropout))
+            input_dim = res_edge_embedding_dim
+        self.edge_layers = nn.Sequential(*layers)
+
+    def message(self, res_embedding: torch.Tensor, res_edge_embedding: torch.Tensor, edge_index: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Generate messages for each edge in the residue graph.
+
+        Args:
+            res_embedding (torch.Tensor): Node features of shape (batch_size, max_len, res_embedding_dim).
+            res_edge_embedding (torch.Tensor): Edge features of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
+            edge_index (torch.Tensor): Edge indices of shape (batch_size, max_len, num_neighbours).
+            mask (torch.Tensor): Mask indicating valid residues of shape (batch_size, max_len).
+
+        Returns:
+            torch.Tensor: Messages of shape (batch_size, max_len, num_neighbours, res_embedding_dim).
+        """
+        batch_size, max_len, num_neighbours, _ = res_edge_embedding.shape
+
+        # Mask invalid nodes and expand for neighbors
+        res_embedding = res_embedding * mask.unsqueeze(-1)
+
+        # Replace invalid indices (-1) with 0 to avoid runtime errors
+        safe_edge_index = edge_index.clone()
+        safe_edge_index[safe_edge_index == -1] = 0
+
+        # Gather neighbor features using the safe edge index
+        neighbor_features = torch.gather(
+            res_embedding.unsqueeze(2).expand(-1, -1, num_neighbours, -1),
+            dim=1,
+            index=safe_edge_index.unsqueeze(-1).expand(-1, -1, -1, res_embedding.shape[-1])
+        )  # Shape: (batch_size, max_len, num_neighbours, res_embedding_dim)
+
+        # Concatenate source, target, and edge features
+        edge_inputs = torch.cat([
+            res_embedding.unsqueeze(2).expand(-1, -1, num_neighbours, -1),  # Source node features
+            neighbor_features,  # Target node features
+            res_edge_embedding  # Edge features
+        ], dim=-1)  # Shape: (batch_size, max_len, num_neighbours, res_embedding_dim * 2 + res_edge_embedding_dim)
+
+        # Generate messages and mask invalid ones
+        valid_mask = (edge_index != -1).unsqueeze(-1).float()  # Shape: (batch_size, max_len, num_neighbours, 1)
+        messages = self.message_layers(edge_inputs) * valid_mask  # Shape: (batch_size, max_len, num_neighbours, res_embedding_dim)
+
+        return messages
+
+    @staticmethod
+    def aggregation(mask: torch.Tensor, res_embedding: torch.Tensor, messages: torch.Tensor,
+                    edge_index: torch.Tensor) -> torch.Tensor:
+        """
+        Aggregate messages for each node and update node features.
+
+        Args:
+            mask (torch.Tensor): Mask indicating valid residues of shape (batch_size, max_len).
+            res_embedding (torch.Tensor): Node features of shape (batch_size, max_len, res_embedding_dim).
+            messages (torch.Tensor): Messages of shape (batch_size, max_len, num_neighbours, res_embedding_dim).
+            edge_index (torch.Tensor): Edge indices of shape (batch_size, max_len, num_neighbours).
+
+        Returns:
+            torch.Tensor: Updated node features of shape (batch_size, max_len, res_embedding_dim).
+        """
+        # Compute the sum of messages for each target node
+        message_sum = torch.sum(messages, dim=2)  # Shape: (batch_size, max_len, res_embedding_dim)
+
+        # Compute the number of valid neighbors for each node
+        valid_neighbors = (edge_index != -1).sum(dim=-1, keepdim=True).float()  # Shape: (batch_size, max_len, 1)
+        valid_neighbors[valid_neighbors == 0] = 1  # Avoid division by zero
+
+        # Compute the mean of messages
+        aggregated_messages = message_sum / valid_neighbors  # Shape: (batch_size, max_len, res_embedding_dim)
+
+        # Add aggregated messages to the original node features
+        updated_res_embedding = res_embedding + aggregated_messages  # Shape: (batch_size, max_len, res_embedding_dim)
+
+        # Mask invalid nodes (padding residues)
+        updated_res_embedding = updated_res_embedding * mask.unsqueeze(-1)  # Shape: (batch_size, max_len, res_embedding_dim)
+
+        return updated_res_embedding
+
+    def _update_edges(self, res_embedding: torch.Tensor, res_edge_embedding: torch.Tensor,
+                      edge_index: torch.Tensor) -> torch.Tensor:
+        """
+        Update edge features in the residue graph.
+
+        Args:
+            res_embedding (torch.Tensor): Node features of shape (batch_size, max_len, res_embedding_dim).
+            res_edge_embedding (torch.Tensor): Edge features of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
+            edge_index (torch.Tensor): Edge indices of shape (batch_size, max_len, num_neighbours).
+
+        Returns:
+            torch.Tensor: Updated edge features of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
+        """
+        # Gather neighbor node features using edge_index
+        batch_size, max_len, num_neighbours = edge_index.shape
+        res_embedding_dim = res_embedding.shape[-1]
+
+        # Replace -1 in edge_index with 0 temporarily for safe indexing
+        safe_edge_index = edge_index.clone()
+        safe_edge_index[safe_edge_index == -1] = 0
+
+        # Gather neighbor node features
+        neighbor_features = torch.gather(
+            res_embedding.unsqueeze(2).expand(-1, -1, num_neighbours, -1),
+            # Shape: (batch_size, max_len, num_neighbours, res_embedding_dim)
+            dim=1,
+            index=safe_edge_index.unsqueeze(-1).expand(-1, -1, -1, res_embedding_dim)
+        )
+
+        # Concatenate central node features, neighbor node features, and edge features
+        central_features = res_embedding.unsqueeze(2).expand(-1, -1, num_neighbours, -1)  # Shape: (batch_size, max_len, num_neighbours, res_embedding_dim)
+        concatenated_features = torch.cat([central_features, neighbor_features, res_edge_embedding], dim=-1)  # Shape: (batch_size, max_len, num_neighbours, res_embedding_dim * 2 + res_edge_embedding_dim)
+
+        # Update edge features using self.edge_layers
+        updated_edge_features = self.edge_layers(concatenated_features)  # Shape: (batch_size, max_len, num_neighbours, res_edge_embedding_dim)
+
+        return updated_edge_features
+
+    def forward(self, res_embedding: torch.Tensor, res_edge_embedding: torch.Tensor, edge_index: torch.Tensor,
+                mask: torch.Tensor) -> tuple[Any, Any, Tensor, Tensor]:
+        """
+        Forward pass for residue-level MPNN.
+
+        Args:
+            res_embedding (torch.Tensor): Node features of shape (batch_size, max_len, res_embedding_dim).
+            res_edge_embedding (torch.Tensor): Edge features of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
+            edge_index (torch.Tensor): Edge indices of shape (batch_size, max_len, num_neighbours).
+            mask (torch.Tensor): Mask indicating valid residues of shape (batch_size, max_len).
+
+        Returns:
+            Tuple[Tensor, Tensor, Tensor, Tensor]:
+                - res_embedding: Updated node features of shape (batch_size, max_len, res_embedding_dim).
+                - res_edge_embedding: Updated edge features of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
+                - edge_index: Edge indices of shape (batch_size, max_len, num_neighbours).
+                - mask: Mask indicating valid residues of shape (batch_size, max_len).
+        """
+        # Generate messages
+        messages = self.message(res_embedding, res_edge_embedding, edge_index, mask)
+
+        # Aggregate messages to update node features
+        res_embedding = self.aggregation(mask, res_embedding, messages, edge_index)
+
+        # Apply graph normalization
+        res_embedding = self.graph_norm(res_embedding, mask)
+
+        # Update edge features
+        res_edge_embedding = self._update_edges(res_embedding, res_edge_embedding, edge_index)
+
+        return res_embedding, res_edge_embedding, edge_index, mask
 
 
 class ResPooling(nn.Module):
@@ -802,10 +990,10 @@ class Readout(nn.Module):
 
 
 class RNAMPNN(LightningModule):
-    def __init__(self, num_atom_neighbour: int, lr: float = 1e-3):
+    def __init__(self, num_atom_neighbours: int, lr: float = 1e-3):
         super().__init__()
         self.save_hyperparameters()
-        self.num_atom_neighbour = num_atom_neighbour
+        self.num_atom_neighbours = num_atom_neighbours
 
     def forward(self):
         pass
