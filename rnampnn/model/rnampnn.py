@@ -1,14 +1,14 @@
 import torch
 import torch.nn as nn
 from pytorch_lightning import LightningModule
-from typing import Tuple, Any
-from torch import Tensor
-
-from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, LEPS, SEPS, NUM_RES_TYPES
+from typing import Tuple
+import os
+import csv
+from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, LEPS, SEPS, NUM_RES_TYPES, REVERSE_VOCAB
 from torch.nn import functional as F
 
 class GraphNormalization(nn.Module):
-    def __init__(self, embedding_dim: int, epsilon: float = SEPS):
+    def __init__(self, embedding_dim: int):
         """
         Graph normalization layer for normalizing node features in a graph.
         Args:
@@ -16,7 +16,6 @@ class GraphNormalization(nn.Module):
             epsilon (float): Small constant to avoid division by zero.
         """
         super().__init__()
-        self.epsilon = epsilon
         self.scale = nn.Parameter(torch.ones(1, 1, embedding_dim))
         self.shift = nn.Parameter(torch.zeros(1, 1, embedding_dim))
 
@@ -41,7 +40,7 @@ class GraphNormalization(nn.Module):
 
         mean = masked_features.sum(dim=1, keepdim=True) / valid_counts
         variance = ((masked_features - mean) ** 2).sum(dim=1, keepdim=True) / valid_counts
-        std = torch.sqrt(variance + self.epsilon)
+        std = torch.sqrt(variance + SEPS)
 
         # Normalize features
         normalized_features = (features - mean) / std
@@ -534,8 +533,7 @@ class ResFeature(nn.Module):
         vecs = coords[:, :, 1:] - coords[:, :, :-1]  # Shape: (batch_size, max_len, num_inside_dist_atoms-1, 3)
 
         # Compute distances
-        inside_dists = torch.sqrt(
-            torch.sum(vecs ** 2, dim=-1) + SEPS)  # Shape: (batch_size, max_len, num_inside_dist_atoms-1)
+        inside_dists = torch.sqrt(torch.sum(vecs ** 2, dim=-1) + SEPS)  # Shape: (batch_size, max_len, num_inside_dist_atoms-1)
 
         # Replace distances for padding residues with 1e6
         padding_mask = (mask == 0).unsqueeze(-1)  # Shape: (batch_size, max_len, 1)
@@ -771,7 +769,7 @@ class ResFeature(nn.Module):
             edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len, num_neighbours).
 
         Returns:
-            torch.Tensor: Residue edge embedding of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
+            res_edge_embedding (torch.Tensor): Residue edge embedding of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
         """
         # Compute edge features
         cross_dists = self._cross_dists(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbours, num_cross_dist_atoms * (num_cross_dist_atoms - 1) / 2)
@@ -804,7 +802,10 @@ class ResFeature(nn.Module):
             atom_embedding (torch.Tensor): Atom-level embeddings of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Residue node embeddings, edge embeddings, and edge indices.
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                - res_embedding: Residue embedding of shape (batch_size, max_len, res_embedding_dim).
+                - res_edge_embedding: Residue edge embedding of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
+                - edge_index: Indices of neighbors of shape (batch_size, max_len, num_neighbours).
         """
         # Generate residue graph edge information
         edge_index = self._get_res_graph(coords, mask)  # Shape: (batch_size, max_len, num_neighbours)
@@ -1000,6 +1001,12 @@ class ResMPNN(nn.Module):
 
         return res_embedding, res_edge_embedding
 
+class ResPooling(nn.Module):
+    def __init__(self):
+        pass
+    
+    def forward(self, res_embedding: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        pass
 
 class Readout(nn.Module):
     def __init__(self, res_embedding_dim: int, readout_hidden_dim: int, num_layers: int, dropout: float = 0.1):
@@ -1033,7 +1040,7 @@ class Readout(nn.Module):
             mask (torch.Tensor): Mask indicating valid residues of shape (batch_size, max_len).
 
         Returns:
-            torch.Tensor: Predicted residue type logits of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS).
+            logits (torch.Tensor): Predicted residue type logits of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS).
         """
         # Apply feedforward network
         logits = self.readout_layers(res_embedding)  # Shape: (batch_size, max_len, NUM_MAIN_SEQ_ATOMS)
@@ -1046,11 +1053,11 @@ class Readout(nn.Module):
 
 class RNAMPNN(LightningModule):
     def __init__(self,
-                 num_atom_neighbours: int = 30,
+                 num_atom_neighbours: int = 3,
                  atom_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  depth_atom_mpnn: int = 2,
-                 num_atom_mpnn_layers = 2,
-                 num_res_neighbours: int = 30,
+                 num_atom_mpnn_layers = 1,
+                 num_res_neighbours: int = 14,
                  num_inside_dist_atoms: int = NUM_MAIN_SEQ_ATOMS,
                  num_inside_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_inside_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
@@ -1063,13 +1070,42 @@ class RNAMPNN(LightningModule):
                  num_atom_pooling_layers: int = 2,
                  depth_res_feature: int = 2,
                  depth_res_edge_feature: int = 2,
-                 num_res_mpnn_layers: int = 2,
+                 num_res_mpnn_layers: int = 3,
                  depth_res_mpnn: int = 2,
                  num_mpnn_edge_layers: int = 2,
                  readout_hidden_dim: int = DEFAULT_HIDDEN_DIM,
-                 num_readout_layers: int = 2,
+                 num_readout_layers: int = 3,
                  dropout: float = 0.1,
-                 lr: float = 1e-3,):
+                 lr: float = 2e-3,):
+        """
+        Initialize the RNAMPNN model.
+        
+        Args:
+            num_atom_neighbours (int): Number of neighboring atoms for atom-level features.
+            atom_embedding_dim (int): Dimension of the atom embedding.
+            depth_atom_mpnn (int): Depth of the atom-level MPNN.
+            num_atom_mpnn_layers (int): Number of atom MPNN layers.
+            num_res_neighbours (int): Number of neighboring residues for residue-level features.
+            num_inside_dist_atoms (int): Number of atoms for inside distance calculation.
+            num_inside_angle_atoms (int): Number of atoms for inside angle calculation.
+            num_inside_dihedral_atoms (int): Number of atoms for inside dihedral calculation.
+            num_cross_dist_atoms (int): Number of atoms for cross distance calculation.
+            num_cross_angle_atoms (int): Number of atoms for cross angle calculation.
+            num_cross_dihedral_atoms (int): Number of atoms for cross dihedral calculation.
+            atom_pooling_hidden_dim (int): Hidden dimension for atom pooling layers.
+            res_embedding_dim (int): Dimension of the residue embedding.
+            res_edge_embedding_dim (int): Dimension of the residue edge embedding.
+            num_atom_pooling_layers (int): Number of atom pooling layers.
+            depth_res_feature (int): Depth of the residue feature extraction network.
+            depth_res_edge_feature (int): Depth of the residue edge feature extraction network.
+            num_res_mpnn_layers (int): Number of residue MPNN layers.
+            depth_res_mpnn (int): Depth of the residue-level MPNN.
+            num_mpnn_edge_layers (int): Number of edge update layers in MPNN.
+            readout_hidden_dim (int): Hidden dimension for the readout layer.
+            num_readout_layers (int): Number of readout layers.
+            dropout (float): Dropout rate for regularization.
+            lr (float): Learning rate for the optimizer.
+        """
         super().__init__()
         self.save_hyperparameters()
         self.atom_feature = AtomFeature(num_atom_neighbours, atom_embedding_dim)
@@ -1108,24 +1144,28 @@ class RNAMPNN(LightningModule):
         atom_embedding, atom_cross_dists, atom_edge_index = self.atom_feature(atom_coords, atom_mask)
         for layer in self.atom_mpnn_layers:
             atom_embedding = layer(atom_embedding, atom_cross_dists, atom_edge_index, atom_mask)
+        del atom_cross_dists, atom_edge_index, atom_mask, atom_coords
+        torch.cuda.empty_cache()
         res_embedding, res_edge_embedding, edge_index = self.res_feature(coords, mask, atom_embedding)
+        del atom_embedding
+        torch.cuda.empty_cache()
         for layer in self.res_mpnn_layers:
             res_embedding, res_edge_embedding = layer(res_embedding, res_edge_embedding, edge_index, mask)
+        del res_edge_embedding, edge_index
+        torch.cuda.empty_cache()
         logits = self.readout(res_embedding, mask)
 
         return logits
-
+    
     def training_step(self, batch):
         sequences, coords, mask, _ = batch
         sequences.to(self.device)
         coords = coords.to(self.device)
         mask = mask.to(self.device)
         logits = self(coords, mask)
-        print(sequences.view(-1).shape)
-        print(F.softmax(logits, dim=-1).view(-1).shape)
         loss = self.loss_fn(F.softmax(logits, dim=-1).view(-1), sequences.view(-1))
-
         self.log('train_loss', loss, prog_bar=True, sync_dist=True)
+
         return loss
 
     def validation_step(self, batch):
@@ -1159,9 +1199,75 @@ class RNAMPNN(LightningModule):
         return {'val_loss': loss, 'val_recovery_rate': recovery_rate}
 
     def test_step(self, batch):
-        _, coords, mask, pdb_id = batch
+        """
+        Perform a test step, computing loss and sequence recovery rate.
+        
+        Args:
+            batch: A batch of test data.
+        
+        Returns:
+            dict: Test metrics including loss and recovery rate.
+        """
+        sequences, coords, mask, _ = batch
+        sequences = sequences.to(self.device)
+        coords = coords.to(self.device)
+        mask = mask.to(self.device)
 
+        # Forward pass
+        logits = self(coords, mask)
+
+        # Compute loss
+        loss = self.loss_fn(F.softmax(logits, dim=-1).view(-1), sequences.view(-1))
+        self.log('test_loss', loss, prog_bar=True, sync_dist=True)
+
+        # Compute sequence recovery rate
+        probs = F.softmax(logits, dim=-1)
+        correct = (probs.argmax(dim=-1) == sequences.argmax(dim=-1)) * mask
+        recovery_rate = correct.sum().item() / mask.sum().item()
+        self.log('test_recovery_rate', recovery_rate, prog_bar=True, sync_dist=True)
+
+        return {'test_loss': loss, 'test_recovery_rate': recovery_rate}
+    
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.8)
         return [optimizer], [scheduler]
+    
+    def predict(self, batch, batch_id, output_dir, filename):
+        """
+        Perform inference and save results to a CSV file.
+
+        Args:
+            batch: A batch of input data.
+            batch_id: The ID of the current batch.
+            output_dir: The directory to save the output file.
+            filename: The name of the output CSV file.
+        """# Reverse the VOCAB dictionary
+
+        _, coords, mask, pdb_id = batch
+        coords = coords.to(self.device)
+        mask = mask.to(self.device)
+
+        # Perform inference
+        logits = self(coords, mask)
+        predictions = torch.argmax(logits, dim=-1)  # Shape: (batch_size, max_len)
+
+        # Decode predictions to RNA sequences
+        rna_sequences = []
+        for i in range(predictions.size(0)):
+            seq = "".join([REVERSE_VOCAB[idx] for idx in predictions[i][mask[i] == 1].tolist()])
+            rna_sequences.append(seq)
+
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, filename)
+
+        # Write results to CSV
+        write_header = batch_id == 0  # Write header only for the first batch
+        with open(output_path, mode="a", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            if write_header:
+                writer.writerow(["pdb_id", "seq"])  # Write header
+            for pdb, seq in zip(pdb_id, rna_sequences):
+                writer.writerow([pdb, seq])
+        

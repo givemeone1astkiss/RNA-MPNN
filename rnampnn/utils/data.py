@@ -154,12 +154,13 @@ class RNADataset(Dataset):
     def __fill_nan_with_mean(coordinates: torch.Tensor) -> torch.Tensor:
         """
         Fill NaN values in the coordinates tensor with random values based on the coordinates of other atoms.
+        If NaN values still exist after processing, they will be replaced with 0.
 
         Args:
             coordinates (torch.Tensor): Tensor of shape (num_samples, num_atoms, 3) containing coordinates.
 
         Returns:
-            torch.Tensor: Tensor with NaN values filled with random coordinates.
+            torch.Tensor: Tensor with NaN values filled with random coordinates or 0.
         """
         coords_np = coordinates.numpy()
         for atom_idx in range(coords_np.shape[1]):
@@ -180,6 +181,9 @@ class RNADataset(Dataset):
                         random_vector = np.random.randn(3)
                         random_vector = NUM_RES_TYPES * random_vector / np.linalg.norm(random_vector)
                         atom_coords[seq_idx] = reference_coords + random_vector
+
+        coords_np[np.isnan(coords_np)] = 0
+
         return torch.tensor(coords_np, dtype=torch.float32)
 
     @staticmethod

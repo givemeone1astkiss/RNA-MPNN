@@ -10,8 +10,22 @@
 from rnampnn.utils.data import RNADataModule
 from rnampnn.utils.train import get_trainer
 from rnampnn.model.rnampnn import RNAMPNN
+from rnampnn.config.seeds import seeding
 
-model = RNAMPNN()
-data = RNADataModule(split_ratio=0.95, batch_size=1)
-trainer = get_trainer(name='RNAMPNN', version=0, max_epochs=80)
-trainer.fit(model, data)
+# seeding()
+# model = RNAMPNN()
+# data = RNADataModule(split_ratio=0.95, batch_size=2, min_len=2)
+# trainer = get_trainer(name='RNAMPNN', version=7, max_epochs=60)
+# trainer.fit(model, data)
+
+
+# model = RNAMPNN.load_from_checkpoint('out/checkpoints/RNAMPNN/checkpoint-epoch=59-6.ckpt')
+#
+# data = RNADataModule(split_ratio=0.999, batch_size=1, min_len=2)
+# data.setup()
+# for batch in data.train_dataloader():
+#     model.eval()
+#     sequence, coords, mask, id = batch
+#     coords  = coords.to(model.device)
+#     mask = mask.to(model.device)
+#     x = model(coords, mask)

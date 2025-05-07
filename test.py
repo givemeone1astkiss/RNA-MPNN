@@ -144,11 +144,22 @@ def test_module():
         print(loss)
         break
     
+def test_nan():
+    rna_datamodule = RNADataModule(batch_size=4)
+    rna_datamodule.setup()
+    train_loader = rna_datamodule.train_dataloader()
+    rna_module = RNAMPNN()
+    for batch in train_loader:
+        loss = rna_module.validation_step(batch)
+        print(loss)
+        break
+    
+    
 if __name__ == '__main__':
-    test_res_feature()
+    # test_res_feature()
     # test_atom_feature()
     # test_res_mpnn()
     # test_atom_mpnn()
     # test_readout()
     # test_data_loader()
-    # test_module()
+    test_module()
