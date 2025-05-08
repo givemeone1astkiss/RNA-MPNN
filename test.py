@@ -78,7 +78,7 @@ def test_res_mpnn():
     res_embedding, res_edge_embedding, edge_index = res_feature(coords, mask, atom_embedding)
     res_mpnn = ResMPNN(res_embedding_dim=32, res_edge_embedding_dim=32, depth_res_mpnn=2, num_edge_layers=2)
     message = res_mpnn.message(res_embedding, res_edge_embedding, edge_index, mask)
-    res_embedding, res_edge_embedding, edge_index, mask = res_mpnn(res_embedding, res_edge_embedding, edge_index, mask)
+    res_embedding, res_edge_embedding = res_mpnn(res_embedding, res_edge_embedding, edge_index, mask)
     print('\n', '=' * 79)
     print(message.shape)
     print(res_embedding.shape, res_edge_embedding.shape)
@@ -108,7 +108,7 @@ def test_atom_mpnn():
     atom_embedding, atom_cross_dists, atom_edge_index = atom_feature(atom_coords, atom_mask)
     print(atom_embedding.shape, atom_cross_dists.shape, atom_edge_index.shape)
     message = atom_mpnn.message(atom_embedding, atom_cross_dists, atom_edge_index, atom_mask)
-    atom_embedding, atom_cross_dists, atom_edge_index, atom_mask = atom_mpnn(atom_embedding, atom_cross_dists, atom_edge_index, atom_mask)
+    atom_embedding = atom_mpnn(atom_embedding, atom_cross_dists, atom_edge_index, atom_mask)
     print('\n', '=' * 79)
     print(message.shape)
     print(atom_embedding.shape)
@@ -124,7 +124,6 @@ def test_readout():
     print('\n', '=' * 79)
     print(logits.shape)
     print('=' * 79, '\n')
-
 
 def test_data_loader():
     rna_datamodule = RNADataModule()
@@ -153,13 +152,3 @@ def test_nan():
         loss = rna_module.validation_step(batch)
         print(loss)
         break
-    
-    
-if __name__ == '__main__':
-    # test_res_feature()
-    # test_atom_feature()
-    # test_res_mpnn()
-    # test_atom_mpnn()
-    # test_readout()
-    # test_data_loader()
-    test_module()
