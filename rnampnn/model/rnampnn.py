@@ -37,7 +37,7 @@ class RNAMPNN(LightningModule):
                  lr: float = 2e-3,):
         """
         Initialize the RNAMPNN model.
-        
+
         Args:
             num_atom_neighbours (int): Number of neighboring atoms for atom-level features.
             atom_embedding_dim (int): Dimension of the atom embedding.
@@ -114,7 +114,7 @@ class RNAMPNN(LightningModule):
         logits = self.readout(res_embedding, mask)
 
         return logits
-    
+
     def training_step(self, batch):
         sequences, coords, mask, _ = batch
         sequences.to(self.device)
@@ -159,10 +159,10 @@ class RNAMPNN(LightningModule):
     def test_step(self, batch):
         """
         Perform a test step, computing loss and sequence recovery rate.
-        
+
         Args:
             batch: A batch of test data.
-        
+
         Returns:
             dict: Test metrics including loss and recovery rate.
         """
@@ -185,12 +185,12 @@ class RNAMPNN(LightningModule):
         self.log('test_recovery_rate', recovery_rate, prog_bar=True, sync_dist=True)
 
         return {'test_loss': loss, 'test_recovery_rate': recovery_rate}
-    
+
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.8)
         return [optimizer], [scheduler]
-    
+
     def predict(self, batch, batch_id, output_dir, filename):
         """
         Perform inference and save results to a CSV file.
@@ -228,3 +228,4 @@ class RNAMPNN(LightningModule):
                 writer.writerow(["pdb_id", "seq"])  # Write header
             for pdb, seq in zip(pdb_id, rna_sequences):
                 writer.writerow([pdb, seq])
+

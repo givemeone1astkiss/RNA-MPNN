@@ -1,4 +1,7 @@
-from rnampnn.model.rnampnn import ResFeature, AtomFeature, to_atom_format, ResMPNN, AtomMPNN, Readout, RNAMPNN
+from rnampnn.model.mpnn import ResMPNN, AtomMPNN
+from rnampnn.model.feature import ResFeature, AtomFeature, to_atom_format
+from rnampnn.model.utils import Readout, BertReadout
+from rnampnn.model.rnampnn import RNAMPNN
 import torch
 from rnampnn.utils.data import RNADataModule
 
@@ -152,3 +155,17 @@ def test_nan():
         loss = rna_module.validation_step(batch)
         print(loss)
         break
+
+
+def test_bert():
+    res_embedding = torch.cat((torch.rand(1, 30, 32), torch.zeros(1, 5, 32)), dim=1)
+    mask = torch.cat((torch.ones(1, 30), torch.zeros(1, 5)), dim=1)
+    readout = BertReadout(padding_len=5000,
+                          res_embedding_dim=32,
+                          num_attn_layers=2,
+                          num_heads=4,
+                          ffn_dim=32,
+                          num_ffn_layers=2,
+                          dropout=0.1)
+    logits = readout(res_embedding, mask)
+    print(logits.shape)
