@@ -25,5 +25,6 @@ def get_trainer(name: str, version: int, max_epochs: int=60, val_check_interval:
         enable_progress_bar=True,
         logger=logger,
         callbacks=[checkpoint],
-        check_val_every_n_epoch=val_check_interval
+        check_val_every_n_epoch=val_check_interval,
+        strategy='ddp_find_unused_parameters_true'
     )

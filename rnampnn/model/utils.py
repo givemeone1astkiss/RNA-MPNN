@@ -122,8 +122,8 @@ class BertReadout(nn.Module):
         self.ffn_layers = nn.Sequential(*layers)
 
     def _padding(self, res_embedding: torch.Tensor, mask: torch.Tensor):
-        padded_res_embedding = torch.cat((res_embedding, torch.zeros(res_embedding.shape[0], self.padding_len - res_embedding.shape[1], res_embedding.shape[2])), dim=1)
-        padded_mask = torch.cat((mask, torch.zeros(mask.shape[0], self.padding_len - mask.shape[1])), dim=1)
+        padded_res_embedding = torch.cat((res_embedding, torch.zeros(res_embedding.shape[0], self.padding_len - res_embedding.shape[1], res_embedding.shape[2]).to(res_embedding.device)), dim=1)
+        padded_mask = torch.cat((mask, torch.zeros(mask.shape[0], self.padding_len - mask.shape[1]).to(mask.device)), dim=1)
         return padded_res_embedding, padded_mask
 
     @staticmethod
@@ -136,7 +136,7 @@ class BertReadout(nn.Module):
         Returns:
             padded_res_embedding (torch.Tensor): Residue-level features with position embeddings added.
         """
-        batch_size, padding_len, embedding_dim = padded_res_embedding.size()
+        _, padding_len, embedding_dim = padded_res_embedding.size()
         position = torch.arange(0, padding_len, device=padded_res_embedding.device).unsqueeze(1)  # Shape: (padding_len, 1)
         div_term = torch.exp(torch.arange(0, embedding_dim, 2, device=padded_res_embedding.device) * -(math.log(10000.0) / embedding_dim))  # Shape: (embedding_dim // 2)
 

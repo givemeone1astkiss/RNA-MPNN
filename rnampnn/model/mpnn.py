@@ -118,7 +118,7 @@ class ResMPNN(nn.Module):
                  res_edge_embedding_dim: int,
                  depth_res_mpnn: int,
                  num_edge_layers: int,
-                 dropout: float = 0.1):
+                 dropout: float):
         """
         Initialize the Residue Message Passing Neural Network (ResMPNN).
         Args:
@@ -260,9 +260,9 @@ class ResMPNN(nn.Module):
         concatenated_features = torch.cat([central_features, neighbor_features, res_edge_embedding], dim=-1)  # Shape: (batch_size, max_len, num_neighbours, res_embedding_dim * 2 + res_edge_embedding_dim)
 
         # Update edge features using self.edge_layers
-        updated_edge_features = self.edge_layers(concatenated_features)  # Shape: (batch_size, max_len, num_neighbours, res_edge_embedding_dim)
+        res_edge_embedding = self.edge_layers(concatenated_features)  # Shape: (batch_size, max_len, num_neighbours, res_edge_embedding_dim)
 
-        return updated_edge_features
+        return res_edge_embedding
 
     def forward(self, res_embedding: torch.Tensor, res_edge_embedding: torch.Tensor, edge_index: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """

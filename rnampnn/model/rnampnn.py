@@ -5,18 +5,14 @@ import os
 import csv
 from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, REVERSE_VOCAB
 from torch.nn import functional as F
-from .mpnn import AtomMPNN, ResMPNN
-from .feature import AtomFeature, ResFeature
+from .mpnn import  ResMPNN
+from .feature import  ResFeature
 from .utils import BertReadout
 
 
 class RNAMPNN(LightningModule):
     def __init__(self,
-                 num_atom_neighbours: int = 3,
-                 atom_embedding_dim: int = DEFAULT_HIDDEN_DIM,
-                 depth_atom_mpnn: int = 2,
-                 num_atom_mpnn_layers = 1,
-                 num_res_neighbours: int = 14,
+                 num_res_neighbours: int = 20,
                  num_inside_dist_atoms: int = NUM_MAIN_SEQ_ATOMS,
                  num_inside_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_inside_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
@@ -30,8 +26,6 @@ class RNAMPNN(LightningModule):
                  num_res_mpnn_layers: int = 3,
                  depth_res_mpnn: int = 2,
                  num_mpnn_edge_layers: int = 2,
-                 readout_hidden_dim: int = DEFAULT_HIDDEN_DIM,
-                 num_readout_layers: int = 3,
                  padding_len: int = 4500,
                  num_attn_layers: int = 2,
                  num_heads: int = 8,
@@ -43,10 +37,6 @@ class RNAMPNN(LightningModule):
         Initialize the RNAMPNN model.
 
         Args:
-            num_atom_neighbours (int): Number of neighboring atoms for atom-level features.
-            atom_embedding_dim (int): Dimension of the atom embedding.
-            depth_atom_mpnn (int): Depth of the atom-level MPNN.
-            num_atom_mpnn_layers (int): Number of atom MPNN layers.
             num_res_neighbours (int): Number of neighboring residues for residue-level features.
             num_inside_dist_atoms (int): Number of atoms for inside distance calculation.
             num_inside_angle_atoms (int): Number of atoms for inside angle calculation.
@@ -61,8 +51,6 @@ class RNAMPNN(LightningModule):
             num_res_mpnn_layers (int): Number of residue MPNN layers.
             depth_res_mpnn (int): Depth of the residue-level MPNN.
             num_mpnn_edge_layers (int): Number of edge update layers in MPNN.
-            readout_hidden_dim (int): Hidden dimension for the readout layer.
-            num_readout_layers (int): Number of readout layers.
             padding_len (int): Length of the input sequences after padding.
             num_attn_layers (int): Number of attention layers in the readout.
             num_heads (int): Number of attention heads in the readout.
@@ -73,8 +61,6 @@ class RNAMPNN(LightningModule):
         """
         super().__init__()
         self.save_hyperparameters()
-        self.atom_feature = AtomFeature(num_atom_neighbours, atom_embedding_dim)
-        self.atom_mpnn_layers = nn.ModuleList([AtomMPNN(atom_embedding_dim, depth_atom_mpnn, dropout=dropout) for _ in range(num_atom_mpnn_layers)])
         self.res_feature = ResFeature(num_neighbours=num_res_neighbours,
                                       num_inside_dist_atoms=num_inside_dist_atoms,
                                       num_inside_angle_atoms=num_inside_angle_atoms,
@@ -87,7 +73,7 @@ class RNAMPNN(LightningModule):
                                       num_layers=depth_res_feature,
                                       num_edge_layers=depth_res_edge_feature,
                                       dropout=dropout)
-        self.res_mpnn_layers = nn.ModuleList([ResMPNN(res_embedding_dim=res_embedding_dim, res_edge_embedding_dim=res_edge_embedding_dim, depth_res_mpnn=depth_res_mpnn, num_edge_layers=num_mpnn_edge_layers) for _ in range(num_res_mpnn_layers)])
+        self.res_mpnn_layers = nn.ModuleList([ResMPNN(res_embedding_dim=res_embedding_dim, res_edge_embedding_dim=res_edge_embedding_dim, depth_res_mpnn=depth_res_mpnn, num_edge_layers=num_mpnn_edge_layers, dropout=dropout) for _ in range(num_res_mpnn_layers)])
         self.readout = BertReadout(padding_len=padding_len,
                                    res_embedding_dim=res_embedding_dim,
                                    num_attn_layers=num_attn_layers,

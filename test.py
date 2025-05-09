@@ -4,6 +4,7 @@ from rnampnn.model.utils import Readout, BertReadout
 from rnampnn.model.rnampnn import RNAMPNN
 import torch
 from rnampnn.utils.data import RNADataModule
+from tqdm import tqdm
 
 
 def test_res_feature():
@@ -156,16 +157,23 @@ def test_nan():
         print(loss)
         break
 
+def test_grad():
+    model = RNAMPNN().to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    data = RNADataModule(split_ratio=0.95, batch_size=2, min_len=2)
+    data.setup()
+    for batch in tqdm(data.train_dataloader(), desc="Training", unit="batch"):
+        batch = batch.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        loss = model.training_step(batch)
+        model.zero_grad()  # Clear previous gradients
+        loss.backward()  # Compute gradients
 
-def test_bert():
-    res_embedding = torch.cat((torch.rand(1, 30, 32), torch.zeros(1, 5, 32)), dim=1)
-    mask = torch.cat((torch.ones(1, 30), torch.zeros(1, 5)), dim=1)
-    readout = BertReadout(padding_len=5000,
-                          res_embedding_dim=32,
-                          num_attn_layers=2,
-                          num_heads=4,
-                          ffn_dim=32,
-                          num_ffn_layers=2,
-                          dropout=0.1)
-    logits = readout(res_embedding, mask)
-    print(logits.shape)
+        # Check for zero gradients
+        for name, param in model.named_parameters():
+            if param.grad is None:
+                print(f"Warning: Gradient for parameter '{name}' is None.")
+            elif torch.all(param.grad == 0):
+                print(f"Warning: Gradient for parameter '{name}' is all zeros.")
+        
+                
+if __name__ == "__main__":
+    test_grad()
