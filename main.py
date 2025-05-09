@@ -31,6 +31,6 @@ if __name__ == "__main__":
 
     # Predict using the model
     try:
-        predict(model, batch_size=1, data_path='./data/', output_path='./out/')
+        predict(model, batch_size=1)
     except torch.OutOfMemoryError:
-        predict(model, batch_size=1, data_path='./data/', output_path='./out/')
+        print("Out of memory error, trying with batch size 1")
