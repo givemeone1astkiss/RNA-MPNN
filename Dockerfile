@@ -1,10 +1,11 @@
 FROM  pytorchlightning/pytorch_lightning
 LABEL authors="Huazhi Wang"
 
-ADD rdesign /app/rdesign
+#ADD rdesign /app/rdesign
+ADD rnampnn /app/rnampnn
 ADD ./out /app/out
 ADD ./run.sh ./main.py /app/
-ADD ./env/ /app/env/
+#ADD ./env/ /app/env/
 WORKDIR /app
 RUN cd /app \
     && pip install numpy biopython pandas tqdm -i https://pypi.tuna.tsinghua.edu.cn/simple \
