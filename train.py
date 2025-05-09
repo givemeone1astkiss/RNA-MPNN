@@ -12,11 +12,11 @@ from rnampnn.utils.train import get_trainer
 from rnampnn.model.rnampnn import RNAMPNN
 from rnampnn.config.seeds import seeding
 
-# seeding()
-# model = RNAMPNN()
-# data = RNADataModule(split_ratio=0.95, batch_size=2, min_len=2)
-# trainer = get_trainer(name='RNAMPNN', version=7, max_epochs=60)
-# trainer.fit(model, data)
+seeding()
+model = RNAMPNN()
+data = RNADataModule(split_ratio=0.95, batch_size=2, min_len=2)
+trainer = get_trainer(name='RNAMPNN-AF', version=1, max_epochs=120)
+trainer.fit(model, data)
 
 
 # model = RNAMPNN.load_from_checkpoint('out/checkpoints/RNAMPNN/checkpoint-epoch=59-6.ckpt')

@@ -1,11 +1,11 @@
 # Path for data.
-DATA_PATH='./data/'
+DATA_PATH: str='./data/'
 # Path for saving logs.
-LOG_PATH='./logs/'
+LOG_PATH: str='./logs/'
 # Path for saving generated SMILES strings.
-OUTPUT_PATH='./out/'
+OUTPUT_PATH: str='./out/'
 
-FEAT_DIMS = {
+FEAT_DIMS: dict = {
     'node': {
         'angle': 12,
         'distance': 80,
@@ -18,9 +18,9 @@ FEAT_DIMS = {
     }
 }
 
-SPLIT_RATIO = [0.9, 0.1, 0.0]
+SPLIT_RATIO: list = [0.9, 0.1, 0.0]
 
-COMPETITION_DATA = '/saisdata/'
-COMPETITION_OUT = '/saisresult/'
+COMPETITION_DATA: str = '/saisdata/'
+COMPETITION_OUT: str = '/saisresult/'
 
-BEST_CKPT = 'out/checkpoints/RDesign/checkpoint-epoch=79-2.5.ckpt'
+BEST_CKPT: str = 'out/checkpoints/RDesign/checkpoint-epoch=79-2.5.ckpt'

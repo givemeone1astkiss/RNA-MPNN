@@ -140,11 +140,8 @@ class ResFeature(nn.Module):
                  num_cross_dist_atoms: int = NUM_MAIN_SEQ_ATOMS,
                  num_cross_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_cross_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
-                 atom_pool_hidden_dim: int = DEFAULT_HIDDEN_DIM,
-                 atom_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  res_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
-                 num_atom_pool_layers: int = 2,
                  num_layers: int = 2,
                  num_edge_layers: int = 2,
                  dropout: float = 0.1):
@@ -158,11 +155,8 @@ class ResFeature(nn.Module):
             num_cross_dist_atoms (int): Number of atoms for cross distance calculation.
             num_cross_angle_atoms (int): Number of atoms for cross angle calculation.
             num_cross_dihedral_atoms (int): Number of atoms for cross dihedral angle calculation.
-            atom_pool_hidden_dim (int): Dimension of the hidden layers for atom pool.
-            atom_embedding_dim (int): Dimension of the atom-level features.
             res_embedding_dim (int): Dimension of the residue-level node features.
             res_edge_embedding_dim (int): Dimension of the residue-level edge features.
-            num_atom_pool_layers (int): Number of linear layers for atom pool.
             num_layers (int): Number of linear layers for residue-level node features.
             num_edge_layers (int): Number of linear layers for residue-level edge features.
             dropout (float): Dropout rate for regularization.
@@ -183,13 +177,9 @@ class ResFeature(nn.Module):
         self.num_cross_dihedral_atoms = num_cross_dihedral_atoms
         raw_dim = num_inside_dist_atoms - 1 + num_inside_angle_atoms - 2 + num_inside_dihedral_atoms - 3
         raw_edge_dim = num_cross_dist_atoms ** 2 + (num_cross_angle_atoms - 1) ** 2 + (num_cross_dihedral_atoms - 2) ** 2
-        self.atom_pool = AtomPool(raw_dim=raw_dim,
-                                        atom_pool_hidden_dim=atom_pool_hidden_dim,
-                                        num_layers=num_atom_pool_layers,
-                                        dropout=dropout)
 
         layers = []
-        input_dim = raw_dim + atom_embedding_dim
+        input_dim = raw_dim
         for _ in range(num_layers):
             layers.append(nn.Linear(input_dim, res_embedding_dim))
             layers.append(nn.GELU())
@@ -534,14 +524,13 @@ class ResFeature(nn.Module):
 
         return cross_dihedrals
 
-    def _res_embedding(self, coords: torch.Tensor, mask: torch.Tensor, atom_embedding: torch.Tensor) -> torch.Tensor:
+    def _res_embedding(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         Compute residue-level graph node features.
 
         Args:
             coords (torch.Tensor): Residue-level coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
             mask (torch.Tensor): Residue-level mask of shape (batch_size, max_len).
-            atom_embedding (torch.Tensor): Atom-level embeddings of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
 
         Returns:
             res_embedding (torch.Tensor): Residue embedding of shape (batch_size, max_len, res_embedding_dim).
@@ -549,11 +538,9 @@ class ResFeature(nn.Module):
         inside_dists = self._inside_dists(coords, mask)  # Shape: (batch_size, max_len, num_inside_dist_atoms * (num_inside_dist_atoms - 1) / 2)
         inside_angles = self._inside_angles(coords, mask)  # Shape: (batch_size, max_len, num_inside_angle_atoms - 2)
         inside_dihedrals = self._inside_dihedrals(coords, mask)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms - 3)
-        atom_mask = mask.unsqueeze(-1).expand(-1, -1, NUM_MAIN_SEQ_ATOMS).reshape(mask.shape[0], -1)
 
         raw = torch.cat([inside_dists, inside_angles, inside_dihedrals], dim=-1)  # Shape: (batch_size, max_len, raw_dim)
-        pooled_atom_embedding = self.atom_pool(atom_embedding, atom_mask, raw)  # Shape: (batch_size, max_len, atom_embedding_dim)
-        res_embedding = self.res_embedding_layers(torch.cat([raw, pooled_atom_embedding],dim=-1))  # Shape: (batch_size, max_len, res_embedding_dim)
+        res_embedding = self.res_embedding_layers(raw)  # Shape: (batch_size, max_len, res_embedding_dim)
         res_embedding = res_embedding * mask.unsqueeze(-1)
 
         return res_embedding
@@ -591,14 +578,13 @@ class ResFeature(nn.Module):
 
         return res_edge_embedding
 
-    def forward(self, coords: torch.Tensor, mask: torch.Tensor, atom_embedding: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, coords: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward method to compute residue-level graph embeddings.
 
         Args:
             coords (torch.Tensor): Residue-level coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
             mask (torch.Tensor): Residue-level mask of shape (batch_size, max_len).
-            atom_embedding (torch.Tensor): Atom-level embeddings of shape (batch_size, max_len * NUM_MAIN_SEQ_ATOMS, atom_embedding_dim).
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -613,7 +599,7 @@ class ResFeature(nn.Module):
         res_edge_embedding = self._res_edge_embedding(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbours, res_edge_embedding_dim)
 
         # Compute residue node embeddings
-        res_embedding = self._res_embedding(coords, mask, atom_embedding)  # Shape: (batch_size, max_len, res_embedding_dim)
+        res_embedding = self._res_embedding(coords, mask)  # Shape: (batch_size, max_len, res_embedding_dim)
         res_embedding = self.graph_norm(res_embedding, mask)
 
         return res_embedding, res_edge_embedding, edge_index
