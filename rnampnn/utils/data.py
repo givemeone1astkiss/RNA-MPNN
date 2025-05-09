@@ -105,6 +105,40 @@ def pdb_to_coords(input_path: str, output_path: str) -> None:
         output_file = os.path.join(output_path, os.path.splitext(pdb_file)[0] + ".npy")
         np.save(output_file, coords_array)
 
+def featurize(batch: List[Dict[str, Union[str, torch.Tensor]]]) -> Tuple[
+    torch.Tensor, torch.Tensor, torch.Tensor, List[str]]:
+    """
+    Featurize a batch of RNA data by padding sequences and coordinates to the same length.
+
+    Args:
+        batch (List[Dict[str, Union[str, torch.Tensor]]]): A batch of RNA data points.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[str]]:
+            - sequences: Padded one-hot encoded sequences of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS).
+            - coords: Padded coordinates of atoms of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
+            - mask: Mask indicating valid positions in the sequences of shape (batch_size, max_len).
+            - rna_ids: List of RNA IDs corresponding to the batch.
+    """
+
+    batch_size = len(batch)
+    max_len = max(item['sequence'].shape[0] for item in batch)
+    sequences = torch.zeros((batch_size, max_len, NUM_RES_TYPES), dtype=torch.float32)
+    coords = torch.zeros((batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3), dtype=torch.float32)
+    mask = torch.zeros((batch_size, max_len), dtype=torch.float32)
+
+    rna_ids = []
+
+
+    for i, item in enumerate(batch):
+        seq_len = item['sequence'].shape[0]
+        sequences[i, :seq_len, :] = item['sequence']
+        coords[i, :seq_len, :, :] = item['coordinates']
+        mask[i, :seq_len] = 1
+        rna_ids.append(item['id'])
+
+    return sequences, coords, mask, rna_ids
+
 class RNADataset(Dataset):
     def __init__(self, data: List[Dict[str, Union[str, torch.Tensor]]]) -> None:
         """
@@ -423,7 +457,6 @@ class RNADataModule(LightningDataModule):
         mask = torch.zeros((batch_size, max_len), dtype=torch.float32)
 
         rna_ids = []
-
 
         for i, item in enumerate(batch):
             seq_len = item['sequence'].shape[0]

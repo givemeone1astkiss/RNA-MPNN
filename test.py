@@ -146,7 +146,7 @@ def test_module():
         loss = rna_module.validation_step(batch)
         print(loss)
         break
-    
+
 def test_nan():
     rna_datamodule = RNADataModule(batch_size=4)
     rna_datamodule.setup()
@@ -173,7 +173,11 @@ def test_grad():
                 print(f"Warning: Gradient for parameter '{name}' is None.")
             elif torch.all(param.grad == 0):
                 print(f"Warning: Gradient for parameter '{name}' is all zeros.")
-        
-                
+
+def regular():
+    X = torch.tensor([[1,2,3,4],[1,2,33,4]])
+    X = X[0:[1,2]]
+    print(X)
+
 if __name__ == "__main__":
-    test_grad()
+    regular()

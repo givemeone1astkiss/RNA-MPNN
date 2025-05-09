@@ -83,7 +83,7 @@ class RNAMPNN(LightningModule):
                                    dropout=dropout)
         self.loss_fn = nn.CrossEntropyLoss()
 
-    def forward(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, coords: torch.Tensor, mask: torch.Tensor, is_predict: bool=False) -> torch.Tensor:
         """
         Forward pass for the RNAMPNN model.
 
@@ -95,10 +95,18 @@ class RNAMPNN(LightningModule):
             torch.Tensor: Predicted residue type logits of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS).
         """
         res_embedding, res_edge_embedding, edge_index = self.res_feature(coords, mask)
+        if is_predict:
+            del coords
+            torch.cuda.empty_cache()
         for layer in self.res_mpnn_layers:
             res_embedding, res_edge_embedding = layer(res_embedding, res_edge_embedding, edge_index, mask)
+        if is_predict:
+            del res_edge_embedding, edge_index
+            torch.cuda.empty_cache()
         logits = self.readout(res_embedding, mask)
-
+        if is_predict:
+            del res_embedding
+            torch.cuda.empty_cache()
         return logits
 
     def training_step(self, batch):
@@ -187,19 +195,20 @@ class RNAMPNN(LightningModule):
             output_dir: The directory to save the output file.
             filename: The name of the output CSV file.
         """
-
         _, coords, mask, pdb_id = batch
         coords = coords.to(self.device)
         mask = mask.to(self.device)
 
         # Perform inference
-        logits = self(coords, mask)
+        logits = self(coords, mask, is_predict=True)
         predictions = torch.argmax(logits, dim=-1)  # Shape: (batch_size, max_len)
 
         # Decode predictions to RNA sequences
         rna_sequences = []
         for i in range(predictions.size(0)):
-            seq = "".join([REVERSE_VOCAB[idx] for idx in predictions[i][mask[i] == 1].tolist()])
+            # Extract valid residues based on the mask
+            valid_indices = mask[i] == 1
+            seq = "".join([REVERSE_VOCAB[idx] for idx in predictions[i][valid_indices].tolist()])
             rna_sequences.append(seq)
 
         # Ensure output directory exists
