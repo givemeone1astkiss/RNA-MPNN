@@ -91,7 +91,8 @@ class Readout(nn.Module):
 
 
 class BertReadout(nn.Module):
-    def __init__(self, padding_len: int,
+    def __init__(self,
+                 padding_len: int,
                  res_embedding_dim: int,
                  num_attn_layers: int,
                  num_heads: int,

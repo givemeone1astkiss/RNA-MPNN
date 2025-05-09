@@ -6,8 +6,9 @@ import csv
 from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, REVERSE_VOCAB
 from torch.nn import functional as F
 from .mpnn import AtomMPNN, ResMPNN
-from .feature import AtomFeature, ResFeature, to_atom_format
-from .utils import Readout
+from .feature import AtomFeature, ResFeature
+from .utils import BertReadout
+
 
 class RNAMPNN(LightningModule):
     def __init__(self,
@@ -22,10 +23,8 @@ class RNAMPNN(LightningModule):
                  num_cross_dist_atoms: int = NUM_MAIN_SEQ_ATOMS,
                  num_cross_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_cross_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
-                 atom_pool_hidden_dim: int = DEFAULT_HIDDEN_DIM,
                  res_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
-                 num_atom_pool_layers: int = 2,
                  depth_res_feature: int = 2,
                  depth_res_edge_feature: int = 2,
                  num_res_mpnn_layers: int = 3,
@@ -33,6 +32,11 @@ class RNAMPNN(LightningModule):
                  num_mpnn_edge_layers: int = 2,
                  readout_hidden_dim: int = DEFAULT_HIDDEN_DIM,
                  num_readout_layers: int = 3,
+                 padding_len: int = 4500,
+                 num_attn_layers: int = 2,
+                 num_heads: int = 8,
+                 ffn_dim: int = 512,
+                 num_ffn_layers: int = 2,
                  dropout: float = 0.1,
                  lr: float = 2e-3,):
         """
@@ -50,10 +54,8 @@ class RNAMPNN(LightningModule):
             num_cross_dist_atoms (int): Number of atoms for cross distance calculation.
             num_cross_angle_atoms (int): Number of atoms for cross angle calculation.
             num_cross_dihedral_atoms (int): Number of atoms for cross dihedral calculation.
-            atom_pool_hidden_dim (int): Hidden dimension for atom Pool layers.
             res_embedding_dim (int): Dimension of the residue embedding.
             res_edge_embedding_dim (int): Dimension of the residue edge embedding.
-            num_atom_pool_layers (int): Number of atom Pool layers.
             depth_res_feature (int): Depth of the residue feature extraction network.
             depth_res_edge_feature (int): Depth of the residue edge feature extraction network.
             num_res_mpnn_layers (int): Number of residue MPNN layers.
@@ -61,6 +63,11 @@ class RNAMPNN(LightningModule):
             num_mpnn_edge_layers (int): Number of edge update layers in MPNN.
             readout_hidden_dim (int): Hidden dimension for the readout layer.
             num_readout_layers (int): Number of readout layers.
+            padding_len (int): Length of the input sequences after padding.
+            num_attn_layers (int): Number of attention layers in the readout.
+            num_heads (int): Number of attention heads in the readout.
+            ffn_dim (int): Dimension of the feedforward network in the readout.
+            num_ffn_layers (int): Number of feedforward layers in the readout.
             dropout (float): Dropout rate for regularization.
             lr (float): Learning rate for the optimizer.
         """
@@ -75,16 +82,19 @@ class RNAMPNN(LightningModule):
                                       num_cross_dist_atoms=num_cross_dist_atoms,
                                       num_cross_angle_atoms=num_cross_angle_atoms,
                                       num_cross_dihedral_atoms=num_cross_dihedral_atoms,
-                                      atom_pool_hidden_dim=atom_pool_hidden_dim,
-                                      atom_embedding_dim=atom_embedding_dim,
                                       res_embedding_dim=res_embedding_dim,
                                       res_edge_embedding_dim=res_edge_embedding_dim,
-                                      num_atom_pool_layers=num_atom_pool_layers,
                                       num_layers=depth_res_feature,
                                       num_edge_layers=depth_res_edge_feature,
                                       dropout=dropout)
         self.res_mpnn_layers = nn.ModuleList([ResMPNN(res_embedding_dim=res_embedding_dim, res_edge_embedding_dim=res_edge_embedding_dim, depth_res_mpnn=depth_res_mpnn, num_edge_layers=num_mpnn_edge_layers) for _ in range(num_res_mpnn_layers)])
-        self.readout = Readout(res_embedding_dim=res_embedding_dim, readout_hidden_dim=readout_hidden_dim, num_layers=num_readout_layers, dropout=dropout)
+        self.readout = BertReadout(padding_len=padding_len,
+                                   res_embedding_dim=res_embedding_dim,
+                                   num_attn_layers=num_attn_layers,
+                                   num_heads=num_heads,
+                                   ffn_dim=ffn_dim,
+                                   num_ffn_layers=num_ffn_layers,
+                                   dropout=dropout)
         self.loss_fn = nn.CrossEntropyLoss()
 
     def forward(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -98,19 +108,9 @@ class RNAMPNN(LightningModule):
         Returns:
             torch.Tensor: Predicted residue type logits of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS).
         """
-        atom_coords, atom_mask = to_atom_format(coords, mask)
-        atom_embedding, atom_cross_dists, atom_edge_index = self.atom_feature(atom_coords, atom_mask)
-        for layer in self.atom_mpnn_layers:
-            atom_embedding = layer(atom_embedding, atom_cross_dists, atom_edge_index, atom_mask)
-        del atom_cross_dists, atom_edge_index, atom_mask, atom_coords
-        torch.cuda.empty_cache()
-        res_embedding, res_edge_embedding, edge_index = self.res_feature(coords, mask, atom_embedding)
-        del atom_embedding
-        torch.cuda.empty_cache()
+        res_embedding, res_edge_embedding, edge_index = self.res_feature(coords, mask)
         for layer in self.res_mpnn_layers:
             res_embedding, res_edge_embedding = layer(res_embedding, res_edge_embedding, edge_index, mask)
-        del res_edge_embedding, edge_index
-        torch.cuda.empty_cache()
         logits = self.readout(res_embedding, mask)
 
         return logits
@@ -200,7 +200,7 @@ class RNAMPNN(LightningModule):
             batch_id: The ID of the current batch.
             output_dir: The directory to save the output file.
             filename: The name of the output CSV file.
-        """# Reverse the VOCAB dictionary
+        """
 
         _, coords, mask, pdb_id = batch
         coords = coords.to(self.device)
