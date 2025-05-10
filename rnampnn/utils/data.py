@@ -425,13 +425,13 @@ class RNADataModule(LightningDataModule):
             self.test_set = RNADataset.from_path(self.data_path, is_predict=True)
 
     def train_dataloader(self) -> DataLoader:
-        return DataLoader(self.train_set, batch_size=self.batch_size, num_workers=19, shuffle=True, persistent_workers=True, collate_fn=self._featurize)
+        return DataLoader(self.train_set, batch_size=self.batch_size, num_workers=8, shuffle=True, persistent_workers=True, collate_fn=self._featurize)
 
     def val_dataloader(self) -> DataLoader:
-        return DataLoader(self.val_set, batch_size=self.batch_size, num_workers=19, shuffle=False, persistent_workers=True, collate_fn=self._featurize)
+        return DataLoader(self.val_set, batch_size=self.batch_size, num_workers=8, shuffle=False, persistent_workers=True, collate_fn=self._featurize)
 
     def test_dataloader(self) -> DataLoader:
-        return DataLoader(self.test_set, batch_size=self.batch_size, num_workers=19, shuffle=False, persistent_workers=True, collate_fn=self._featurize)
+        return DataLoader(self.test_set, batch_size=self.batch_size, num_workers=8, shuffle=False, persistent_workers=True, collate_fn=self._featurize)
 
     @staticmethod
     def _featurize(batch: List[Dict[str, Union[str, torch.Tensor]]]) -> Tuple[

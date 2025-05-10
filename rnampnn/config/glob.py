@@ -19,4 +19,4 @@ SEPS = 1e-6
 VOCAB = {'A': 0, 'U': 1, 'C': 2, 'G': 3}
 REVERSE_VOCAB = {0: 'A', 1: 'U', 2: 'C', 3: 'G'}
 
-BEST_CKPT: str = 'out/checkpoints/RNAMPNN-AF/checkpoint-epoch=71-2.ckpt'
+BEST_CKPT: str = 'out/checkpoints/RNAMPNN-AF/checkpoint-epoch=299-2.ckpt'

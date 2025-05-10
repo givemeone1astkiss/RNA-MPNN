@@ -116,7 +116,7 @@ class RNAMPNN(LightningModule):
         mask = mask.to(self.device)
         logits = self(coords, mask)
         loss = self.loss_fn(F.softmax(logits, dim=-1).view(-1), sequences.view(-1))
-        self.log('train_loss', loss, prog_bar=True, sync_dist=True)
+        self.log('train_loss', loss, prog_bar=True, sync_dist=True, batch_size=2)
 
         return loss
 
