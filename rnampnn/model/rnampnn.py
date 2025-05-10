@@ -12,7 +12,7 @@ from .utils import BertReadout
 
 class RNAMPNN(LightningModule):
     def __init__(self,
-                 num_res_neighbours: int = 20,
+                 num_res_neighbours: int = 30,
                  num_inside_dist_atoms: int = NUM_MAIN_SEQ_ATOMS,
                  num_inside_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_inside_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
@@ -23,7 +23,7 @@ class RNAMPNN(LightningModule):
                  res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  depth_res_feature: int = 2,
                  depth_res_edge_feature: int = 2,
-                 num_res_mpnn_layers: int = 3,
+                 num_res_mpnn_layers: int = 2,
                  depth_res_mpnn: int = 2,
                  num_mpnn_edge_layers: int = 2,
                  padding_len: int = 4500,

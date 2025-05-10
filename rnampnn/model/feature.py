@@ -315,16 +315,12 @@ class ResFeature(nn.Module):
         _, _, num_atoms, _ = coords.shape
         assert num_atoms >= self.num_inside_dist_atoms, f"NUM_MAIN_SEQ_ATOMS({num_atoms}) must be at least num_inside_angle_atoms({self.num_inside_angle_atoms}) for angle calculation."
 
-        # Truncate to the first `num_inside_dist_atoms`
         coords = coords[:, :, :self.num_inside_dist_atoms, :]  # Shape: (batch_size, max_len, num_inside_dist_atoms, 3)
 
-        # Compute vectors between adjacent atoms
         vecs = coords[:, :, 1:] - coords[:, :, :-1]  # Shape: (batch_size, max_len, num_inside_dist_atoms-1, 3)
 
-        # Compute distances
         inside_dists = torch.sqrt(torch.sum(vecs ** 2, dim=-1) + SEPS)  # Shape: (batch_size, max_len, num_inside_dist_atoms-1)
 
-        # Replace distances for padding residues with 1e6
         padding_mask = (mask == 0).unsqueeze(-1)  # Shape: (batch_size, max_len, 1)
         inside_dists = inside_dists.masked_fill(padding_mask, 1e6)
 
@@ -344,22 +340,16 @@ class ResFeature(nn.Module):
         _, _, num_atoms, _ = coords.shape
         assert num_atoms >= self.num_inside_angle_atoms, f"NUM_MAIN_SEQ_ATOMS({num_atoms}) must be at least num_inside_angle_atoms({self.num_inside_angle_atoms}) for angle calculation."
 
-        # Truncate to the first six atoms
         coords = coords[:, :, :self.num_inside_angle_atoms, :]  # Shape: (batch_size, max_len, num_inside_angle_atoms, 3)
 
-        # Compute vectors between adjacent atoms
         vecs = coords[:, :, 1:] - coords[:, :, :-1]  # Shape: (batch_size, max_len, num_inside_angle_atoms-1, 3)
 
-        # Compute dot products between consecutive vectors
         dot_products = (vecs[:, :, :-1] * vecs[:, :, 1:]).sum(dim=-1)  # Shape: (batch_size, max_len, num_inside_angle_atoms-2)
 
-        # Compute norms of the vectors
         norms = torch.norm(vecs, dim=-1)  # Shape: (batch_size, max_len, num_inside_angle_atoms-1)
 
-        # Compute cosine values for the angles
         inside_angles = dot_products / (norms[:, :, :-1] * norms[:, :, 1:] + SEPS)  # Shape: (batch_size, max_len, num_inside_angle_atoms-2)
 
-        # Mask invalid residues (set cosine values to zero for padding residues)
         inside_angles = inside_angles * mask.unsqueeze(-1)
 
         return inside_angles
@@ -378,10 +368,8 @@ class ResFeature(nn.Module):
         _, _, num_atoms, _ = coords.shape
         assert num_atoms >= self.num_inside_dihedral_atoms, f"NUM_MAIN_SEQ_ATOMS({num_atoms}) must be at least num_inside_dihedral_atoms({self.num_inside_dihedral_atoms}) for dihedral calculation."
 
-        # Truncate to the first num_inside_dihedral_atoms
         coords = coords[:, :, :self.num_inside_dihedral_atoms, :]  # Shape: (batch_size, max_len, num_inside_dihedral_atoms, 3)
 
-        # Compute vectors between consecutive atoms
         vec1 = F.normalize(coords[:, :, 1:, :] - coords[:, :, :-1, :], dim=-1, eps=SEPS)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-1, 3)
         vec2 = vec1[:, :, 1:, :]  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-2, 3)
         vec1 = vec1[:, :, :-1, :]  # Shape: (batch_size, max_len, num_inside_dihedral_atoms-2, 3)
