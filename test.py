@@ -1,6 +1,6 @@
 from rnampnn.model.mpnn import ResMPNN, AtomMPNN
 from rnampnn.model.feature import ResFeature, AtomFeature, to_atom_format
-from rnampnn.model.utils import Readout, BertReadout
+from rnampnn.model.functional import Readout, BertReadout, BertEmbedding
 from rnampnn.model.rnampnn import RNAMPNN
 import torch
 from rnampnn.utils.data import RNADataModule
@@ -22,12 +22,10 @@ def test_res_feature():
         [1, 1, 1, 1, 1, 0]
     ])
 
-    atom_embedding = torch.cat((torch.rand(1, 35, 32), torch.zeros(1, 7, 32)), dim=1)
+    res_feature = ResFeature(num_neighbours=5, num_cross_dihedral_atoms=6, num_cross_dist_atoms=6,
+                             num_cross_angle_atoms=6, num_inside_dist_atoms=6, num_inside_angle_atoms=6, num_inside_dihedral_atoms=6)
 
-    res_feature = ResFeature(num_neighbours=7, num_cross_dihedral_atoms=7, num_cross_dist_atoms=7, atom_embedding_dim=32,
-                             num_cross_angle_atoms=7, num_inside_dist_atoms=6, num_inside_angle_atoms=6, num_inside_dihedral_atoms=6)
-
-    res_embedding, res_edge_embedding, edge_index = res_feature(coords, mask, atom_embedding)
+    res_embedding, res_edge_embedding, edge_index = res_feature(coords, mask)
     print('\n','='*79)
     print(res_embedding.shape, res_edge_embedding.shape, edge_index)
     print('='*79,'\n')
@@ -72,14 +70,11 @@ def test_res_mpnn():
         [1, 1, 1, 1, 1, 0]
     ])
 
-    atom_embedding = torch.cat((torch.rand(1, 35, 32), torch.zeros(1, 7, 32)), dim=1)
-
     res_feature = ResFeature(num_neighbours=3, num_cross_dihedral_atoms=7, num_cross_dist_atoms=7,
-                             atom_embedding_dim=32,
                              num_cross_angle_atoms=7, num_inside_dist_atoms=6, num_inside_angle_atoms=6,
                              num_inside_dihedral_atoms=6, res_embedding_dim=32, res_edge_embedding_dim=32)
 
-    res_embedding, res_edge_embedding, edge_index = res_feature(coords, mask, atom_embedding)
+    res_embedding, res_edge_embedding, edge_index = res_feature(coords, mask)
     res_mpnn = ResMPNN(res_embedding_dim=32, res_edge_embedding_dim=32, depth_res_mpnn=2, num_edge_layers=2)
     message = res_mpnn.message(res_embedding, res_edge_embedding, edge_index, mask)
     res_embedding, res_edge_embedding = res_mpnn(res_embedding, res_edge_embedding, edge_index, mask)
@@ -129,6 +124,26 @@ def test_readout():
     print(logits.shape)
     print('=' * 79, '\n')
 
+def test_bert_readout():
+    res_embedding = torch.cat((torch.rand(1, 30, 32), torch.zeros(1, 5, 32)), dim=1)
+    mask = torch.cat((torch.ones(1, 30), torch.zeros(1, 5)), dim=1)
+    readout = BertReadout(res_embedding_dim=32, padding_len=40, num_attn_layers=2, num_heads=4, num_ffn_layers=2, ffn_dim=32)
+
+    logits = readout(res_embedding, mask)
+
+    print('\n', '=' * 79)
+    print(logits.shape)
+    print('=' * 79, '\n')
+
+def test_bert_embedding():
+    raw_feature = torch.cat((torch.rand(1, 30, 8), torch.zeros(1, 5, 8)), dim=1)
+    mask = torch.cat((torch.ones(1, 30), torch.zeros(1, 5)), dim=1)
+    embedding = BertEmbedding(raw_dim=8, res_embedding_dim=32, padding_len=40, num_attn_layers=2, num_heads=4, num_ffn_layers=2, ffn_dim=32)
+    res_embedding = embedding(raw_feature, mask)
+    print('\n', '=' * 79)
+    print(res_embedding)
+    print('=' * 79, '\n')
+
 def test_data_loader():
     rna_datamodule = RNADataModule()
     rna_datamodule.setup()
@@ -174,10 +189,30 @@ def test_grad():
             elif torch.all(param.grad == 0):
                 print(f"Warning: Gradient for parameter '{name}' is all zeros.")
 
-def regular():
-    X = torch.tensor([[1,2,3,4],[1,2,33,4]])
-    X = X[0:[1,2]]
-    print(X)
+def test_quaternions():
+    coords = torch.tensor([
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0], [1.0, 1.0, 0.0], [1.0, 1.0, 0.0],
+             [1.0, 1.0, 0.0]],
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, 1.732], [1.0, 0.0, 1.0],
+             [1.0, 0.0, 1.0]],
+            [[0.0, 1.0, 0.0], [2.0, 1.0, 1.732], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0],
+             [1.0, 0.0, 1.0]],
+            [[0.0, 1.0, 1.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [2.0, 1.0, 1.732], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0],
+             [1.0, 0.0, 1.0]],
+            [[0.0, 1.0, 1.0], [2.0, 1.0, 1.732], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0],
+             [1.0, 0.0, 1.0]],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+             [0.0, 0.0, 0.0]]
+        ]
+    ])
+    mask = torch.tensor([
+        [1, 1, 1, 1, 1, 0]
+    ])
+    res_feature = ResFeature(num_neighbours=5, num_cross_dihedral_atoms=6, num_cross_dist_atoms=6, num_cross_angle_atoms=6, num_inside_dist_atoms=6, num_inside_angle_atoms=6, num_inside_dihedral_atoms=6)
+    edge_index = res_feature._get_res_graph(coords, mask)
+    quaternions = res_feature._quaternions(coords, mask, edge_index)
+    print(quaternions.shape)
 
 if __name__ == "__main__":
-    regular()
+    pass

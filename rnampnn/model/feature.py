@@ -3,8 +3,7 @@ import torch
 from ..config.glob import DEFAULT_HIDDEN_DIM, NUM_MAIN_SEQ_ATOMS, LEPS, SEPS
 from typing import Tuple
 from torch.nn import functional as F
-from .pool import AtomPool
-from .utils import GraphNormalization
+from .functional import GraphNormalization, BertEmbedding
 
 
 def to_atom_format(coords: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -141,6 +140,11 @@ class ResFeature(nn.Module):
                  num_cross_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_cross_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  res_embedding_dim: int = DEFAULT_HIDDEN_DIM,
+                 padding_len: int = 4500,
+                 num_attn_layers: int = 2,
+                 num_heads=4,
+                 ffn_dim=DEFAULT_HIDDEN_DIM,
+                 num_ffn_layers=2,
                  res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  num_layers: int = 2,
                  num_edge_layers: int = 2,
@@ -175,17 +179,18 @@ class ResFeature(nn.Module):
         self.num_cross_angle_atoms = num_cross_angle_atoms
         assert num_cross_dihedral_atoms >= 4, f"num_cross_dihedral_atoms({num_cross_dihedral_atoms}) must be at least 4 for cross dihedral calculation."
         self.num_cross_dihedral_atoms = num_cross_dihedral_atoms
-        raw_dim = num_inside_dist_atoms - 1 + num_inside_angle_atoms - 2 + num_inside_dihedral_atoms - 3
+        raw_dim = num_inside_dist_atoms * (num_inside_dist_atoms - 1) // 2 + num_inside_angle_atoms - 2 + num_inside_dihedral_atoms - 3
         raw_edge_dim = num_cross_dist_atoms ** 2 + (num_cross_angle_atoms - 1) ** 2 + (num_cross_dihedral_atoms - 2) ** 2
 
-        layers = []
-        input_dim = raw_dim
-        for _ in range(num_layers):
-            layers.append(nn.Linear(input_dim, res_embedding_dim))
-            layers.append(nn.GELU())
-            layers.append(nn.Dropout(dropout))
-            input_dim = res_embedding_dim
-        self.res_embedding_layers = nn.Sequential(*layers)
+        self.res_embedding = BertEmbedding(raw_dim=raw_dim,
+                                           padding_len=padding_len,
+                                           res_embedding_dim=res_embedding_dim,
+                                           num_attn_layers=num_attn_layers,
+                                           num_heads=num_heads,
+                                           ffn_dim=ffn_dim,
+                                           num_ffn_layers=num_ffn_layers,
+                                           dropout=dropout)
+
         self.graph_norm = GraphNormalization(embedding_dim=res_embedding_dim)
 
         layers = []
@@ -208,7 +213,7 @@ class ResFeature(nn.Module):
         Returns:
             edge_index (torch.Tensor): Indices of neighbors of shape (batch_size, max_len, num_neighbours).
         """
-        batch_size, max_len, num_atoms, _ = coords.shape
+        batch_size, max_len, _, _ = coords.shape
 
         # Compute average coordinates for each residue
         avg_coords = coords.mean(dim=2)  # Shape: (batch_size, max_len, 3)
@@ -310,17 +315,27 @@ class ResFeature(nn.Module):
             mask (torch.Tensor): Mask of shape (batch_size, max_len).
 
         Returns:
-            inside_dists (torch.Tensor): Pairwise distances of shape (batch_size, max_len, num_inside_dist_atoms - 1).
+            inside_dists (torch.Tensor): Pairwise distances of shape (batch_size, max_len, num_inside_dist_atoms * (num_inside_dist_atoms - 1) / 2).
         """
-        _, _, num_atoms, _ = coords.shape
-        assert num_atoms >= self.num_inside_dist_atoms, f"NUM_MAIN_SEQ_ATOMS({num_atoms}) must be at least num_inside_angle_atoms({self.num_inside_angle_atoms}) for angle calculation."
+        batch_size, max_len, num_atoms, _ = coords.shape
+        assert num_atoms >= self.num_inside_dist_atoms, f"NUM_MAIN_SEQ_ATOMS({num_atoms}) must be at least num_inside_dist_atoms({self.num_inside_dist_atoms}) for distance calculation."
 
+        # Truncate to the first `num_inside_dist_atoms`
         coords = coords[:, :, :self.num_inside_dist_atoms, :]  # Shape: (batch_size, max_len, num_inside_dist_atoms, 3)
 
-        vecs = coords[:, :, 1:] - coords[:, :, :-1]  # Shape: (batch_size, max_len, num_inside_dist_atoms-1, 3)
+        # Compute pairwise distances
+        diffs = coords.unsqueeze(3) - coords.unsqueeze(
+            2)  # Shape: (batch_size, max_len, num_inside_dist_atoms, num_inside_dist_atoms, 3)
+        pairwise_dists = torch.sqrt(torch.sum(diffs ** 2,
+                                              dim=-1) + SEPS)  # Shape: (batch_size, max_len, num_inside_dist_atoms, num_inside_dist_atoms)
 
-        inside_dists = torch.sqrt(torch.sum(vecs ** 2, dim=-1) + SEPS)  # Shape: (batch_size, max_len, num_inside_dist_atoms-1)
+        # Extract upper triangular part (excluding diagonal)
+        triu_indices = torch.triu_indices(self.num_inside_dist_atoms, self.num_inside_dist_atoms, offset=1,
+                                          device=coords.device)
+        inside_dists = pairwise_dists[:, :, triu_indices[0], triu_indices[
+                                                                 1]]  # Shape: (batch_size, max_len, num_inside_dist_atoms * (num_inside_dist_atoms - 1) / 2)
 
+        # Mask invalid distances for padding residues
         padding_mask = (mask == 0).unsqueeze(-1)  # Shape: (batch_size, max_len, 1)
         inside_dists = inside_dists.masked_fill(padding_mask, 1e6)
 
@@ -528,8 +543,7 @@ class ResFeature(nn.Module):
         inside_dihedrals = self._inside_dihedrals(coords, mask)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms - 3)
 
         raw = torch.cat([inside_dists, inside_angles, inside_dihedrals], dim=-1)  # Shape: (batch_size, max_len, raw_dim)
-        res_embedding = self.res_embedding_layers(raw)  # Shape: (batch_size, max_len, res_embedding_dim)
-        res_embedding = res_embedding * mask.unsqueeze(-1)
+        res_embedding = self.res_embedding(raw, mask)  # Shape: (batch_size, max_len, res_embedding_dim)
 
         return res_embedding
 

@@ -1,7 +1,7 @@
 from typing import Tuple
 from torch import nn
 import torch
-from .utils import GraphNormalization
+from .functional import GraphNormalization
 
 
 class AtomMPNN(nn.Module):

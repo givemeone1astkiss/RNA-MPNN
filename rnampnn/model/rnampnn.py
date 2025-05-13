@@ -7,7 +7,7 @@ from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, REVERSE_VOCAB
 from torch.nn import functional as F
 from .mpnn import  ResMPNN
 from .feature import  ResFeature
-from .utils import BertReadout
+from .functional import BertReadout, Readout
 
 
 class RNAMPNN(LightningModule):
@@ -20,6 +20,10 @@ class RNAMPNN(LightningModule):
                  num_cross_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_cross_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  res_embedding_dim: int = DEFAULT_HIDDEN_DIM,
+                 num_embedding_attn_layers: int = 2,
+                 num_embedding_heads: int = 4,
+                 embedding_ffn_dim: int = 512,
+                 num_embedding_ffn_layers: int = 2,
                  res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  depth_res_feature: int = 2,
                  depth_res_edge_feature: int = 2,
@@ -27,37 +31,43 @@ class RNAMPNN(LightningModule):
                  depth_res_mpnn: int = 2,
                  num_mpnn_edge_layers: int = 2,
                  padding_len: int = 4500,
-                 num_attn_layers: int = 2,
-                 num_heads: int = 8,
-                 ffn_dim: int = 512,
-                 num_ffn_layers: int = 2,
+                 num_readout_attn_layers: int = 2,
+                 num_readout_heads: int = 8,
+                 readout_ffn_dim: int = 512,
+                 num_readout_ffn_layers: int = 2,
                  dropout: float = 0.1,
-                 lr: float = 2e-3,):
+                 lr: float = 2e-3,
+                 weight_decay: float = 0.01):
         """
         Initialize the RNAMPNN model.
 
         Args:
-            num_res_neighbours (int): Number of neighboring residues for residue-level features.
-            num_inside_dist_atoms (int): Number of atoms for inside distance calculation.
-            num_inside_angle_atoms (int): Number of atoms for inside angle calculation.
-            num_inside_dihedral_atoms (int): Number of atoms for inside dihedral calculation.
-            num_cross_dist_atoms (int): Number of atoms for cross distance calculation.
-            num_cross_angle_atoms (int): Number of atoms for cross angle calculation.
-            num_cross_dihedral_atoms (int): Number of atoms for cross dihedral calculation.
-            res_embedding_dim (int): Dimension of the residue embedding.
-            res_edge_embedding_dim (int): Dimension of the residue edge embedding.
-            depth_res_feature (int): Depth of the residue feature extraction network.
-            depth_res_edge_feature (int): Depth of the residue edge feature extraction network.
-            num_res_mpnn_layers (int): Number of residue MPNN layers.
-            depth_res_mpnn (int): Depth of the residue-level MPNN.
-            num_mpnn_edge_layers (int): Number of edge update layers in MPNN.
-            padding_len (int): Length of the input sequences after padding.
-            num_attn_layers (int): Number of attention layers in the readout.
-            num_heads (int): Number of attention heads in the readout.
-            ffn_dim (int): Dimension of the feedforward network in the readout.
-            num_ffn_layers (int): Number of feedforward layers in the readout.
+            num_res_neighbours (int): Number of residue neighbours.
+            num_inside_dist_atoms (int): Number of inside distance atoms.
+            num_inside_angle_atoms (int): Number of inside angle atoms.
+            num_inside_dihedral_atoms (int): Number of inside dihedral atoms.
+            num_cross_dist_atoms (int): Number of cross distance atoms.
+            num_cross_angle_atoms (int): Number of cross angle atoms.
+            num_cross_dihedral_atoms (int): Number of cross dihedral atoms.
+            res_embedding_dim (int): Dimension of residue embedding.
+            num_embedding_attn_layers (int): Number of attention layers in the embedding module.
+            num_embedding_heads (int): Number of attention heads in the embedding module.
+            embedding_ffn_dim (int): Dimension of feedforward network in the embedding module.
+            num_embedding_ffn_layers (int): Number of feedforward layers in the embedding module.
+            res_edge_embedding_dim (int): Dimension of residue edge embedding.
+            depth_res_feature (int): Depth of the residue feature extraction module.
+            depth_res_edge_feature (int): Depth of the residue edge feature extraction module.
+            num_res_mpnn_layers (int): Number of MPNN layers.
+            depth_res_mpnn (int): Depth of the MPNN layers.
+            num_mpnn_edge_layers (int): Number of edge layers in the MPNN.
+            padding_len (int): Length of the padding for sequences.
+            num_readout_attn_layers (int): Number of attention layers in the readout module.
+            num_readout_heads (int): Number of attention heads in the readout module.
+            readout_ffn_dim (int): Dimension of feedforward network in the readout module.
+            num_readout_ffn_layers (int): Number of feedforward layers in the readout module.
             dropout (float): Dropout rate for regularization.
             lr (float): Learning rate for the optimizer.
+            weight_decay (float): Weight decay for the optimizer.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -69,6 +79,11 @@ class RNAMPNN(LightningModule):
                                       num_cross_angle_atoms=num_cross_angle_atoms,
                                       num_cross_dihedral_atoms=num_cross_dihedral_atoms,
                                       res_embedding_dim=res_embedding_dim,
+                                      padding_len=padding_len,
+                                      num_attn_layers=num_embedding_attn_layers,
+                                      num_heads=num_embedding_heads,
+                                      ffn_dim=embedding_ffn_dim,
+                                      num_ffn_layers=num_embedding_ffn_layers,
                                       res_edge_embedding_dim=res_edge_embedding_dim,
                                       num_layers=depth_res_feature,
                                       num_edge_layers=depth_res_edge_feature,
@@ -76,10 +91,10 @@ class RNAMPNN(LightningModule):
         self.res_mpnn_layers = nn.ModuleList([ResMPNN(res_embedding_dim=res_embedding_dim, res_edge_embedding_dim=res_edge_embedding_dim, depth_res_mpnn=depth_res_mpnn, num_edge_layers=num_mpnn_edge_layers, dropout=dropout) for _ in range(num_res_mpnn_layers)])
         self.readout = BertReadout(padding_len=padding_len,
                                    res_embedding_dim=res_embedding_dim,
-                                   num_attn_layers=num_attn_layers,
-                                   num_heads=num_heads,
-                                   ffn_dim=ffn_dim,
-                                   num_ffn_layers=num_ffn_layers,
+                                   num_attn_layers=num_readout_attn_layers,
+                                   num_heads=num_readout_heads,
+                                   ffn_dim=readout_ffn_dim,
+                                   num_ffn_layers=num_readout_ffn_layers,
                                    dropout=dropout)
         self.loss_fn = nn.CrossEntropyLoss()
 
@@ -111,11 +126,15 @@ class RNAMPNN(LightningModule):
 
     def training_step(self, batch):
         sequences, coords, mask, _ = batch
-        sequences.to(self.device)
+        sequences = sequences.to(self.device)
         coords = coords.to(self.device)
         mask = mask.to(self.device)
+
         logits = self(coords, mask)
-        loss = self.loss_fn(F.softmax(logits, dim=-1).view(-1), sequences.view(-1))
+        probs = F.softmax(logits)
+        valid_probs = probs[mask.bool()]
+        valid_sequences = sequences[mask.bool()]
+        loss = self.loss_fn(valid_probs, valid_sequences)
         self.log('train_loss', loss, prog_bar=True, sync_dist=True, batch_size=2)
 
         return loss
@@ -135,11 +154,11 @@ class RNAMPNN(LightningModule):
         coords = coords.to(self.device)
         mask = mask.to(self.device)
 
-        # Forward pass
         logits = self(coords, mask)
-
-        # Compute loss
-        loss = self.loss_fn(F.softmax(logits, dim=-1).view(-1), sequences.view(-1))
+        probs = F.softmax(logits)
+        valid_probs = probs[mask.bool()]
+        valid_sequences = sequences[mask.bool()]
+        loss = self.loss_fn(valid_probs, valid_sequences)
         self.log('val_loss', loss, prog_bar=True, sync_dist=True)
 
         # Compute sequence recovery rate
@@ -165,11 +184,11 @@ class RNAMPNN(LightningModule):
         coords = coords.to(self.device)
         mask = mask.to(self.device)
 
-        # Forward pass
         logits = self(coords, mask)
-
-        # Compute loss
-        loss = self.loss_fn(F.softmax(logits, dim=-1).view(-1), sequences.view(-1))
+        probs = F.softmax(logits)
+        valid_probs = probs[mask.bool()]
+        valid_sequences = sequences[mask.bool()]
+        loss = self.loss_fn(valid_probs, valid_sequences)
         self.log('test_loss', loss, prog_bar=True, sync_dist=True)
 
         # Compute sequence recovery rate
@@ -181,7 +200,7 @@ class RNAMPNN(LightningModule):
         return {'test_loss': loss, 'test_recovery_rate': recovery_rate}
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.8)
         return [optimizer], [scheduler]
 
@@ -223,4 +242,3 @@ class RNAMPNN(LightningModule):
                 writer.writerow(["pdb_id", "seq"])  # Write header
             for pdb, seq in zip(pdb_id, rna_sequences):
                 writer.writerow([pdb, seq])
-
