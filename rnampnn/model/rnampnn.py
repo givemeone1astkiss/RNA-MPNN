@@ -12,7 +12,7 @@ from .functional import BertReadout
 
 class RNAMPNN(LightningModule):
     def __init__(self,
-                 num_res_neighbours: int = 30,
+                 num_res_neighbours: int = 5,
                  num_inside_dist_atoms: int = NUM_MAIN_SEQ_ATOMS,
                  num_inside_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_inside_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
@@ -21,21 +21,21 @@ class RNAMPNN(LightningModule):
                  num_cross_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  res_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  num_embedding_attn_layers: int = 2,
-                 num_embedding_heads: int = 4,
+                 num_embedding_heads: int = 8,
                  embedding_ffn_dim: int = 512,
                  num_embedding_ffn_layers: int = 2,
                  res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  depth_res_feature: int = 2,
                  depth_res_edge_feature: int = 2,
-                 num_res_mpnn_layers: int = 2,
+                 num_res_mpnn_layers: int = 3,
                  depth_res_mpnn: int = 2,
                  num_mpnn_edge_layers: int = 2,
                  padding_len: int = 4500,
                  num_readout_attn_layers: int = 2,
                  num_readout_heads: int = 8,
                  readout_ffn_dim: int = 512,
-                 num_readout_ffn_layers: int = 2,
-                 dropout: float = 0.1,
+                 num_readout_ffn_layers: int = 3,
+                 dropout: float = 0.2,
                  lr: float = 2e-3,
                  weight_decay: float = 0.0001):
         """
@@ -131,7 +131,7 @@ class RNAMPNN(LightningModule):
         mask = mask.to(self.device)
 
         logits = self(coords, mask)
-        probs = F.softmax(logits)
+        probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
         loss = self.loss_fn(valid_probs, valid_sequences)
@@ -155,7 +155,7 @@ class RNAMPNN(LightningModule):
         mask = mask.to(self.device)
 
         logits = self(coords, mask)
-        probs = F.softmax(logits)
+        probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
         loss = self.loss_fn(valid_probs, valid_sequences)
@@ -185,7 +185,7 @@ class RNAMPNN(LightningModule):
         mask = mask.to(self.device)
 
         logits = self(coords, mask)
-        probs = F.softmax(logits)
+        probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
         loss = self.loss_fn(valid_probs, valid_sequences)

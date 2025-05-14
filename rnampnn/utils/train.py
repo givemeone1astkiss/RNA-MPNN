@@ -3,7 +3,7 @@ from ..config.glob import OUTPUT_PATH
 from pytorch_lightning.callbacks import ModelCheckpoint
 import torch
 
-def get_trainer(name: str, version: int, max_epochs: int=60, val_check_interval: int = 1):
+def get_trainer(name: str, version: int, max_epochs: int=60, val_check_interval: int = 1, progress_bar=True):
     logger = pl.loggers.TensorBoardLogger(
         save_dir=f"{OUTPUT_PATH}/logs",
         name=name,
@@ -22,7 +22,7 @@ def get_trainer(name: str, version: int, max_epochs: int=60, val_check_interval:
         devices=-1 if torch.cuda.is_available() else 1,
         precision="bf16-mixed",
         max_epochs=max_epochs,
-        enable_progress_bar=True,
+        enable_progress_bar=progress_bar,
         logger=logger,
         callbacks=[checkpoint],
         check_val_every_n_epoch=val_check_interval,
