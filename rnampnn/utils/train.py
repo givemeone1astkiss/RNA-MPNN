@@ -1,6 +1,4 @@
 import pytorch_lightning as pl
-from torch.xpu import device
-
 from ..config.glob import OUTPUT_PATH
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning import Callback
@@ -58,3 +56,4 @@ def get_trainer(name: str, version: int, max_epochs: int=60, val_check_interval:
         enable_checkpointing=True
     )
 
+                
