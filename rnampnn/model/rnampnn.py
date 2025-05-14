@@ -27,7 +27,7 @@ class RNAMPNN(LightningModule):
                  res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  depth_res_feature: int = 2,
                  depth_res_edge_feature: int = 2,
-                 num_res_mpnn_layers: int = 3,
+                 num_res_mpnn_layers: int = 5,
                  depth_res_mpnn: int = 2,
                  num_mpnn_edge_layers: int = 2,
                  padding_len: int = 4500,
@@ -35,7 +35,7 @@ class RNAMPNN(LightningModule):
                  num_readout_heads: int = 8,
                  readout_ffn_dim: int = 512,
                  num_readout_ffn_layers: int = 3,
-                 dropout: float = 0.2,
+                 dropout: float = 0.3,
                  lr: float = 2e-3,
                  weight_decay: float = 0.0001):
         """
@@ -98,6 +98,9 @@ class RNAMPNN(LightningModule):
                                    dropout=dropout)
         self.loss_fn = nn.CrossEntropyLoss()
 
+        self.val_step_outputs = []
+        self.test_step_outputs = []
+
     def forward(self, coords: torch.Tensor, mask: torch.Tensor, is_predict: bool=False) -> torch.Tensor:
         """
         Forward pass for the RNAMPNN model.
@@ -159,15 +162,10 @@ class RNAMPNN(LightningModule):
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
         loss = self.loss_fn(valid_probs, valid_sequences)
-        self.log('val_loss', loss, prog_bar=True, sync_dist=True)
+        correct = (valid_probs.argmax(dim=-1) == valid_sequences.argmax(dim=-1)).to(dtype=torch.float32)
+        self.val_step_outputs.append({'val_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]})
+        return {'val_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]}
 
-        # Compute sequence recovery rate
-        probs = F.softmax(logits, dim=-1)
-        correct = (probs.argmax(dim=-1) == sequences.argmax(dim=-1)) * mask  # Mask padding residues
-        recovery_rate = correct.sum().item() / mask.sum().item()
-        self.log('val_recovery_rate', recovery_rate, prog_bar=True, sync_dist=True)
-
-        return {'val_loss': loss, 'val_recovery_rate': recovery_rate}
 
     def test_step(self, batch):
         """
@@ -189,15 +187,10 @@ class RNAMPNN(LightningModule):
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
         loss = self.loss_fn(valid_probs, valid_sequences)
-        self.log('test_loss', loss, prog_bar=True, sync_dist=True)
+        correct = (valid_probs.argmax(dim=-1) == valid_sequences.argmax(dim=-1)).to(dtype=torch.float32)
+        self.test_step_output.append({'test_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]})
+        return {'test_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]}
 
-        # Compute sequence recovery rate
-        probs = F.softmax(logits, dim=-1)
-        correct = (probs.argmax(dim=-1) == sequences.argmax(dim=-1)) * mask
-        recovery_rate = correct.sum().item() / mask.sum().item()
-        self.log('test_recovery_rate', recovery_rate, prog_bar=True, sync_dist=True)
-
-        return {'test_loss': loss, 'test_recovery_rate': recovery_rate}
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
@@ -242,3 +235,4 @@ class RNAMPNN(LightningModule):
                 writer.writerow(["pdb_id", "seq"])  # Write header
             for pdb, seq in zip(pdb_id, rna_sequences):
                 writer.writerow([pdb, seq])
+
