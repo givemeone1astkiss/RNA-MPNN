@@ -20,4 +20,4 @@ DEFAULT_SEED = 42
 VOCAB = {'A': 0, 'U': 1, 'C': 2, 'G': 3}
 REVERSE_VOCAB = {0: 'A', 1: 'U', 2: 'C', 3: 'G'}
 
-BEST_CKPT: str = 'out/checkpoints/RNAMPNN-AF/checkpoint-epoch=355-4.ckpt'
+BEST_CKPT: str = 'out/checkpoints/RNAMPNN-AF/checkpoint-epoch=470-5.ckpt'
