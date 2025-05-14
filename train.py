@@ -1,7 +1,7 @@
 from rnampnn.utils.data import RNADataModule
 from rnampnn.utils.train import get_trainer
 from rnampnn.model.rnampnn import RNAMPNN
-from rnampnn.config.seeds import seeding
+from rnampnn.utils.seed import seeding
 
 seeding()
 model = RNAMPNN()

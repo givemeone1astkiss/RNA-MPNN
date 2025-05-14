@@ -260,7 +260,7 @@ class ResMPNN(nn.Module):
         concatenated_features = torch.cat([central_features, neighbor_features, res_edge_embedding], dim=-1)  # Shape: (batch_size, max_len, num_neighbours, res_embedding_dim * 2 + res_edge_embedding_dim)
 
         # Update edge features using self.edge_layers
-        res_edge_embedding = self.edge_layers(concatenated_features)  # Shape: (batch_size, max_len, num_neighbours, res_edge_embedding_dim)
+        res_edge_embedding += self.edge_layers(concatenated_features)  # Shape: (batch_size, max_len, num_neighbours, res_edge_embedding_dim)
 
         return res_edge_embedding
 

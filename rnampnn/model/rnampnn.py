@@ -7,7 +7,7 @@ from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, REVERSE_VOCAB
 from torch.nn import functional as F
 from .mpnn import  ResMPNN
 from .feature import  ResFeature
-from .functional import BertReadout, Readout
+from .functional import BertReadout
 
 
 class RNAMPNN(LightningModule):
@@ -37,7 +37,7 @@ class RNAMPNN(LightningModule):
                  num_readout_ffn_layers: int = 2,
                  dropout: float = 0.1,
                  lr: float = 2e-3,
-                 weight_decay: float = 0.01):
+                 weight_decay: float = 0.0001):
         """
         Initialize the RNAMPNN model.
 

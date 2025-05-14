@@ -215,22 +215,17 @@ class ResFeature(nn.Module):
         """
         batch_size, max_len, _, _ = coords.shape
 
-        # Compute average coordinates for each residue
         avg_coords = coords.mean(dim=2)  # Shape: (batch_size, max_len, 3)
 
-        # Compute pairwise distances between residues
         d_coords = avg_coords.unsqueeze(1) - avg_coords.unsqueeze(2)  # Shape: (batch_size, max_len, max_len, 3)
         distances = torch.sqrt(torch.sum(d_coords ** 2, dim=-1) + SEPS)  # Shape: (batch_size, max_len, max_len)
 
-        # Mask invalid distances (real residues to padding residues)
         residue_mask_2d = mask.unsqueeze(1) * mask.unsqueeze(2)  # Shape: (batch_size, max_len, max_len)
         distances = distances * residue_mask_2d + (1.0 - residue_mask_2d) * LEPS
 
-        # Exclude self-loops by setting diagonal elements to a large value
         diagonal_mask = torch.eye(max_len, device=distances.device).unsqueeze(0)  # Shape: (1, max_len, max_len)
         distances = distances + diagonal_mask * LEPS
 
-        # Select k-nearest neighbors
         _, edge_index = torch.topk(
             distances,
             min(self.num_neighbours, max_len),  # Ensure we don't request more neighbors than available
@@ -238,29 +233,23 @@ class ResFeature(nn.Module):
             largest=False
         )
 
-        # If padding is needed (when max_len < self.num_neighbours)
         if self.num_neighbours > max_len:
             padding_size = self.num_neighbours - max_len
-            # Pad `edge_index` with -1 and `dist_neighbour` with a large value (e.g., LEPS)
             edge_index = torch.cat(
                 [edge_index,
                 torch.full((batch_size, max_len, padding_size), -1, device=edge_index.device, dtype=edge_index.dtype)],
                 dim=-1
             )
 
-        # Create a tensor of indices for comparison
         indices = torch.arange(max_len, device=edge_index.device).view(1, -1, 1)  # Shape: (1, max_len, 1)
 
-        # Replace self-loops (where edge_index == indices) with -1
         edge_index = torch.where(edge_index == indices, -1, edge_index)
 
-        # Handle cases where num_neighbours exceeds the number of valid residues
-        valid_neighbors = (residue_mask_2d.sum(dim=-1) - 1).clamp(min=0)  # Exclude self
+        valid_neighbors = (residue_mask_2d.sum(dim=-1) - 1).clamp(min=0)
         padding_mask = valid_neighbors.unsqueeze(-1) < torch.arange(self.num_neighbours, device=distances.device)
 
-        edge_index = edge_index.masked_fill(padding_mask, -1)  # Fill remaining neighbors with -1
+        edge_index = edge_index.masked_fill(padding_mask, -1)
 
-        # Set all neighbors of padding residues to -1
         padding_residue_mask = (mask == 0).unsqueeze(-1)  # (batch_size, max_len, 1)
         edge_index = edge_index.masked_fill(padding_residue_mask, -1)
 

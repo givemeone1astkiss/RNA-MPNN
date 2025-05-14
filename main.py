@@ -1,4 +1,4 @@
-from rnampnn.config.seeds import seeding
+from rnampnn.utils.seed import seeding
 from rnampnn.model.rnampnn import RNAMPNN
 from rnampnn.config.glob import BEST_CKPT
 from rnampnn.utils.predict import predict

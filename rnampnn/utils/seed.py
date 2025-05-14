@@ -2,8 +2,9 @@ import numpy as np
 import random
 import os
 import torch
+from ..config.glob import DEFAULT_SEED
 
-DEFAULT_SEED = 42
+
 
 def seeding(seed=DEFAULT_SEED):
     np.random.seed(seed)
