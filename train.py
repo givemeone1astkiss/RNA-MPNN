@@ -5,6 +5,6 @@ from rnampnn.utils.seed import seeding
 
 seeding()
 model = RNAMPNN()
-data = RNADataModule(split_ratio=0.9, batch_size=3, noise_augmentation=200)
-trainer = get_trainer(name='RNAMPNN-AF', version=4, max_epochs=600)
+data = RNADataModule(split_ratio=0.95, batch_size=3)
+trainer = get_trainer(name='RNAMPNN-AF', version=7, max_epochs=200)
 trainer.fit(model, data)

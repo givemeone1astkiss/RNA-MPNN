@@ -12,7 +12,7 @@ from .functional import BertReadout
 
 class RNAMPNN(LightningModule):
     def __init__(self,
-                 num_res_neighbours: int = 4,
+                 num_res_neighbours: int = 3,
                  num_inside_dist_atoms: int = NUM_MAIN_SEQ_ATOMS,
                  num_inside_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_inside_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
@@ -22,22 +22,22 @@ class RNAMPNN(LightningModule):
                  res_embedding_dim: int = DEFAULT_HIDDEN_DIM,
                  num_embedding_attn_layers: int = 2,
                  num_embedding_heads: int = 8,
-                 embedding_ffn_dim: int = 512,
-                 num_embedding_ffn_layers: int = 2,
+                 embedding_ffn_dim: int = 256,
+                 num_embedding_ffn_layers: int = 3,
                  res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
-                 depth_res_feature: int = 2,
+                 depth_res_feature: int = 3,
                  depth_res_edge_feature: int = 2,
-                 num_res_mpnn_layers: int = 6,
+                 num_res_mpnn_layers: int = 10,
                  depth_res_mpnn: int = 2,
                  num_mpnn_edge_layers: int = 2,
                  padding_len: int = 4500,
                  num_readout_attn_layers: int = 2,
                  num_readout_heads: int = 8,
-                 readout_ffn_dim: int = 512,
+                 readout_ffn_dim: int = 256,
                  num_readout_ffn_layers: int = 3,
-                 dropout: float = 0.3,
+                 dropout: float = 0.4,
                  lr: float = 2e-3,
-                 weight_decay: float = 0.0001):
+                 weight_decay: float = 0.0002):
         """
         Initialize the RNAMPNN model.
 
@@ -137,7 +137,7 @@ class RNAMPNN(LightningModule):
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
-        loss = self.loss_fn(valid_probs, valid_sequences)
+        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1), valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
         self.log('train_loss', loss, prog_bar=True, sync_dist=True, batch_size=2)
 
         return loss
@@ -161,7 +161,7 @@ class RNAMPNN(LightningModule):
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
-        loss = self.loss_fn(valid_probs, valid_sequences)
+        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1), valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
         correct = (valid_probs.argmax(dim=-1) == valid_sequences.argmax(dim=-1)).to(dtype=torch.float32)
         self.val_step_outputs.append({'val_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]})
         return {'val_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]}
@@ -186,7 +186,7 @@ class RNAMPNN(LightningModule):
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
-        loss = self.loss_fn(valid_probs, valid_sequences)
+        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1), valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
         correct = (valid_probs.argmax(dim=-1) == valid_sequences.argmax(dim=-1)).to(dtype=torch.float32)
         self.test_step_output.append({'test_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]})
         return {'test_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]}
