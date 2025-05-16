@@ -221,23 +221,3 @@ class BertEmbedding(RNABert):
         padded_res_embedding = self.ffn_layers(padded_res_embedding)
         padded_res_embedding *= padded_mask.unsqueeze(-1)
         return padded_res_embedding[:, :res_embedding.shape[1], :]
-
-class XGBReadout(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.model = xgb.XGBClassifier(
-            objective='multi:softmax',
-            num_class=NUM_RES_TYPES,
-            n_estimators=100,
-            max_depth=6,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42
-        )
-
-    def fit(self, batch):
-        sequences, embedding = batch
-        sequences = sequences.cpu().numpy()
-        embedding = embedding.cpu().numpy()
-        self.model.fit(sequences, embedding)

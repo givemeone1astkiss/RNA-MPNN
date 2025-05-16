@@ -3,11 +3,12 @@ import torch.nn as nn
 from pytorch_lightning import LightningModule
 import os
 import csv
-from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, REVERSE_VOCAB
+from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, REVERSE_VOCAB, NUM_RES_TYPES, DEFAULT_SEED
 from torch.nn import functional as F
 from .mpnn import  ResMPNN
 from .feature import  ResFeature
 from .functional import BertReadout
+import xgboost as xgb
 
 
 class RNAMPNN(LightningModule):
@@ -36,7 +37,12 @@ class RNAMPNN(LightningModule):
                  num_readout_ffn_layers: int = 3,
                  dropout: float = 0.4,
                  lr: float = 2e-3,
-                 weight_decay: float = 0.0002):
+                 weight_decay: float = 0.0002,
+                 n_estimators=100,
+                 xgb_max_depth=6,
+                 xgb_learning_rate=0.1,
+                 xgb_subsample=0.8,
+                 xgb_colsample_bytree=0.8,):
         """
         Initialize the RNAMPNN model.
 
@@ -66,6 +72,11 @@ class RNAMPNN(LightningModule):
             dropout (float): Dropout rate for regularization.
             lr (float): Learning rate for the optimizer.
             weight_decay (float): Weight decay for the optimizer.
+            n_estimators (int): Number of trees in the XGBoost model.
+            xgb_max_depth (int): Maximum depth of the trees in the XGBoost model.
+            xgb_learning_rate (float): Learning rate for the XGBoost model.
+            xgb_subsample (float): Subsample ratio of the training instances for the XGBoost model.
+            xgb_colsample_bytree (float): Subsample ratio of columns when constructing each tree for the XGBoost model.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -94,9 +105,18 @@ class RNAMPNN(LightningModule):
                                    num_ffn_layers=num_readout_ffn_layers,
                                    dropout=dropout)
 
-        self.xgb_readout = None
-        self.loss_fn = nn.CrossEntropyLoss()
+        self.xgb_readout = xgb.XGBClassifier(
+            objective='multi:softmax',
+            num_class=NUM_RES_TYPES,
+            n_estimators=n_estimators,
+            max_depth=xgb_max_depth,
+            learning_rate=xgb_learning_rate,
+            subsample=xgb_subsample,
+            colsample_bytree=xgb_colsample_bytree,
+            random_state= DEFAULT_SEED
+        )
 
+        self.loss_fn = nn.CrossEntropyLoss()
         self.val_step_outputs = []
         self.test_step_outputs = []
 
@@ -220,11 +240,19 @@ class RNAMPNN(LightningModule):
         coords = coords.to(self.device)
         mask = mask.to(self.device)
 
-        # Perform inference
-        logits = self(coords, mask, is_predict=True)
-        predictions = torch.argmax(logits, dim=-1)  # Shape: (batch_size, max_len)
+        # logits = self(coords, mask, is_predict=True)
+        # predictions = torch.argmax(logits, dim=-1)  # Shape: (batch_size, max_len)
+        embedding = self.embedding(coords, mask, is_predict=True)
+        valid_embedding = embedding[mask.bool()]
+        valid_predictions = self.xgb_readout.predict(valid_embedding.cpu())
+        predictions = torch.zeros(coords.size(0), coords.size(1), dtype=torch.long).to(self.device)
+        lengths = mask.sum(dim=-1)
+        start = 0
+        for i in range(coords.size(0)):
+            end = int(lengths[i].item())
+            predictions[i][start:end] = torch.tensor(valid_predictions[start:end], dtype=torch.long).to(self.device)
+            start += end
 
-        # Decode predictions to RNA sequences
         rna_sequences = []
         for i in range(predictions.size(0)):
             # Extract valid residues based on the mask
@@ -232,11 +260,9 @@ class RNAMPNN(LightningModule):
             seq = "".join([REVERSE_VOCAB[idx] for idx in predictions[i][valid_indices].tolist()])
             rna_sequences.append(seq)
 
-        # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, filename)
 
-        # Write results to CSV
         write_header = batch_id == 0  # Write header only for the first batch
         with open(output_path, mode="a", newline="") as csvfile:
             writer = csv.writer(csvfile)
