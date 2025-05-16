@@ -29,6 +29,21 @@ class LossMonitor(Callback):
         model.log('test_recovery_rate', avg_recovery_rate, prog_bar=True, sync_dist=True)
         model.test_step_outputs = []
 
+
+class XGBTrainer(Callback):
+    def on_fit_end(self, trainer: pl.Trainer, model: RNAMPNN) -> None:
+        for batch in trainer.train_dataloader:
+            sequences, coords, mask, _ = batch
+            sequences = sequences.to(model.device)
+            coords = coords.to(model.device)
+            mask = mask.to(model.device)
+            embedding = model.embedding(sequences, coords, mask)
+            valid_embedding = embedding[mask.bool()]
+            valid_sequences = torch.argmax(sequences[mask.bool()], dim=-1)
+            batch = (valid_sequences, valid_embedding)
+            model.xgb_readout.fit(batch)
+
+
 def get_trainer(name: str, version: int, max_epochs: int=60, val_check_interval: int = 1, progress_bar=True):
     logger = pl.loggers.TensorBoardLogger(
         save_dir=f"{OUTPUT_PATH}/logs",

@@ -146,7 +146,6 @@ class ResFeature(nn.Module):
                  ffn_dim=DEFAULT_HIDDEN_DIM,
                  num_ffn_layers=2,
                  res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
-                 num_layers: int = 2,
                  num_edge_layers: int = 2,
                  dropout: float = 0.1):
         """
@@ -200,6 +199,7 @@ class ResFeature(nn.Module):
             layers.append(nn.GELU())
             layers.append(nn.Dropout(dropout))
             input_dim = res_edge_embedding_dim
+
         self.res_edge_embedding_layers = nn.Sequential(*layers)
 
     def _get_res_graph(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -583,14 +583,10 @@ class ResFeature(nn.Module):
                 - res_edge_embedding: Residue edge embedding of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
                 - edge_index: Indices of neighbors of shape (batch_size, max_len, num_neighbours).
         """
-        # Generate residue graph edge information
         edge_index = self._get_res_graph(coords, mask)  # Shape: (batch_size, max_len, num_neighbours)
 
-        # Compute residue edge embeddings
         res_edge_embedding = self._res_edge_embedding(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbours, res_edge_embedding_dim)
 
-        # Compute residue node embeddings
         res_embedding = self._res_embedding(coords, mask)  # Shape: (batch_size, max_len, res_embedding_dim)
         res_embedding = self.graph_norm(res_embedding, mask)
-
         return res_embedding, res_edge_embedding, edge_index

@@ -7,3 +7,5 @@ tqdm~=4.67.1
 typing_extensions~=4.10.0
 torch-geometric~=2.6.1
 e3nn~=0.5.5
+xgboost~=2.1.2
+matplotlib~=3.9.2

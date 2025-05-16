@@ -20,12 +20,11 @@ class RNAMPNN(LightningModule):
                  num_cross_angle_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  num_cross_dihedral_atoms: int = NUM_MAIN_SEQ_ATOMS - 1,
                  res_embedding_dim: int = DEFAULT_HIDDEN_DIM,
-                 num_embedding_attn_layers: int = 2,
+                 num_embedding_attn_layers: int = 0,
                  num_embedding_heads: int = 8,
-                 embedding_ffn_dim: int = 256,
+                 embedding_ffn_dim: int = 512,
                  num_embedding_ffn_layers: int = 3,
                  res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
-                 depth_res_feature: int = 3,
                  depth_res_edge_feature: int = 2,
                  num_res_mpnn_layers: int = 10,
                  depth_res_mpnn: int = 2,
@@ -33,7 +32,7 @@ class RNAMPNN(LightningModule):
                  padding_len: int = 4500,
                  num_readout_attn_layers: int = 2,
                  num_readout_heads: int = 8,
-                 readout_ffn_dim: int = 256,
+                 readout_ffn_dim: int = 512,
                  num_readout_ffn_layers: int = 3,
                  dropout: float = 0.4,
                  lr: float = 2e-3,
@@ -55,7 +54,6 @@ class RNAMPNN(LightningModule):
             embedding_ffn_dim (int): Dimension of feedforward network in the embedding module.
             num_embedding_ffn_layers (int): Number of feedforward layers in the embedding module.
             res_edge_embedding_dim (int): Dimension of residue edge embedding.
-            depth_res_feature (int): Depth of the residue feature extraction module.
             depth_res_edge_feature (int): Depth of the residue edge feature extraction module.
             num_res_mpnn_layers (int): Number of MPNN layers.
             depth_res_mpnn (int): Depth of the MPNN layers.
@@ -85,7 +83,6 @@ class RNAMPNN(LightningModule):
                                       ffn_dim=embedding_ffn_dim,
                                       num_ffn_layers=num_embedding_ffn_layers,
                                       res_edge_embedding_dim=res_edge_embedding_dim,
-                                      num_layers=depth_res_feature,
                                       num_edge_layers=depth_res_edge_feature,
                                       dropout=dropout)
         self.res_mpnn_layers = nn.ModuleList([ResMPNN(res_embedding_dim=res_embedding_dim, res_edge_embedding_dim=res_edge_embedding_dim, depth_res_mpnn=depth_res_mpnn, num_edge_layers=num_mpnn_edge_layers, dropout=dropout) for _ in range(num_res_mpnn_layers)])
@@ -96,10 +93,17 @@ class RNAMPNN(LightningModule):
                                    ffn_dim=readout_ffn_dim,
                                    num_ffn_layers=num_readout_ffn_layers,
                                    dropout=dropout)
+
+        self.xgb_readout = None
         self.loss_fn = nn.CrossEntropyLoss()
 
         self.val_step_outputs = []
         self.test_step_outputs = []
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.8)
+        return [optimizer], [scheduler]
 
     def forward(self, coords: torch.Tensor, mask: torch.Tensor, is_predict: bool=False) -> torch.Tensor:
         """
@@ -108,6 +112,7 @@ class RNAMPNN(LightningModule):
         Args:
             coords (torch.Tensor): Atom coordinates of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS, 3).
             mask (torch.Tensor): Mask indicating valid residues of shape (batch_size, max_len).
+            is_predict (bool): Whether to clean cuda cache to save cuda memory.
 
         Returns:
             torch.Tensor: Predicted residue type logits of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS).
@@ -191,11 +196,14 @@ class RNAMPNN(LightningModule):
         self.test_step_output.append({'test_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]})
         return {'test_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]}
 
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.8)
-        return [optimizer], [scheduler]
+    def embedding(self, coords: torch.Tensor, mask: torch.Tensor, is_predict: bool=False) -> torch.Tensor:
+        res_embedding, res_edge_embedding, edge_index = self.res_feature(coords, mask)
+        if is_predict:
+            del coords
+            torch.cuda.empty_cache()
+        for layer in self.res_mpnn_layers:
+            res_embedding, _ = layer(res_embedding, res_edge_embedding, edge_index, mask)
+        return  res_embedding
 
     def predict(self, batch, batch_id, output_dir, filename):
         """
@@ -207,6 +215,7 @@ class RNAMPNN(LightningModule):
             output_dir: The directory to save the output file.
             filename: The name of the output CSV file.
         """
+        self.eval()
         _, coords, mask, pdb_id = batch
         coords = coords.to(self.device)
         mask = mask.to(self.device)
@@ -235,4 +244,5 @@ class RNAMPNN(LightningModule):
                 writer.writerow(["pdb_id", "seq"])  # Write header
             for pdb, seq in zip(pdb_id, rna_sequences):
                 writer.writerow([pdb, seq])
+
 
