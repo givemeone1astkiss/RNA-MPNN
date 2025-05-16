@@ -296,11 +296,11 @@ class RNAModel(pl.LightningModule):
     def __init__(self,
                 hidden_dim: int = 128,
                 vocab_size: int = 4,
-                k_neighbors: int = 40,
-                dropout: float = 0.1,
+                k_neighbors: int = 4,
+                dropout: float = 0.3,
                 node_feat_types=None,
                 edge_feat_types=None,
-                num_mpnn_layers: int = 9,
+                num_mpnn_layers: int = 10,
                 lr: float = 0.001
                 ):
         super().__init__()
