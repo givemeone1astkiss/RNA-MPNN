@@ -3,7 +3,7 @@ import torch
 from ..config.glob import DEFAULT_HIDDEN_DIM, NUM_MAIN_SEQ_ATOMS, LEPS, SEPS
 from typing import Tuple
 from torch.nn import functional as F
-from .functional import GraphNormalization, BertEmbedding
+from .functional import GraphNormalization, RNABert
 
 
 def to_atom_format(coords: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -146,7 +146,6 @@ class ResFeature(nn.Module):
                  ffn_dim=DEFAULT_HIDDEN_DIM,
                  num_ffn_layers=2,
                  res_edge_embedding_dim: int = DEFAULT_HIDDEN_DIM,
-                 num_layers: int = 2,
                  num_edge_layers: int = 2,
                  dropout: float = 0.1):
         """
@@ -182,14 +181,14 @@ class ResFeature(nn.Module):
         raw_dim = num_inside_dist_atoms * (num_inside_dist_atoms - 1) // 2 + num_inside_angle_atoms - 2 + num_inside_dihedral_atoms - 3
         raw_edge_dim = num_cross_dist_atoms ** 2 + (num_cross_angle_atoms - 1) ** 2 + (num_cross_dihedral_atoms - 2) ** 2
 
-        self.res_embedding = BertEmbedding(raw_dim=raw_dim,
-                                           padding_len=padding_len,
-                                           res_embedding_dim=res_embedding_dim,
-                                           num_attn_layers=num_attn_layers,
-                                           num_heads=num_heads,
-                                           ffn_dim=ffn_dim,
-                                           num_ffn_layers=num_ffn_layers,
-                                           dropout=dropout)
+        self.raw_project = nn.Linear(raw_dim, res_embedding_dim)
+        self.res_embedding = RNABert(padding_len=padding_len,
+                                       res_embedding_dim=res_embedding_dim,
+                                       num_attn_layers=num_attn_layers,
+                                       num_heads=num_heads,
+                                       ffn_dim=ffn_dim,
+                                       num_ffn_layers=num_ffn_layers,
+                                       dropout=dropout)
 
         self.graph_norm = GraphNormalization(embedding_dim=res_embedding_dim)
 
@@ -200,6 +199,7 @@ class ResFeature(nn.Module):
             layers.append(nn.GELU())
             layers.append(nn.Dropout(dropout))
             input_dim = res_edge_embedding_dim
+
         self.res_edge_embedding_layers = nn.Sequential(*layers)
 
     def _get_res_graph(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -532,7 +532,7 @@ class ResFeature(nn.Module):
         inside_dihedrals = self._inside_dihedrals(coords, mask)  # Shape: (batch_size, max_len, num_inside_dihedral_atoms - 3)
 
         raw = torch.cat([inside_dists, inside_angles, inside_dihedrals], dim=-1)  # Shape: (batch_size, max_len, raw_dim)
-        res_embedding = self.res_embedding(raw, mask)  # Shape: (batch_size, max_len, res_embedding_dim)
+        res_embedding = self.res_embedding(self.raw_project(raw), mask)  # Shape: (batch_size, max_len, res_embedding_dim)
 
         return res_embedding
 
@@ -583,14 +583,10 @@ class ResFeature(nn.Module):
                 - res_edge_embedding: Residue edge embedding of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
                 - edge_index: Indices of neighbors of shape (batch_size, max_len, num_neighbours).
         """
-        # Generate residue graph edge information
         edge_index = self._get_res_graph(coords, mask)  # Shape: (batch_size, max_len, num_neighbours)
 
-        # Compute residue edge embeddings
         res_edge_embedding = self._res_edge_embedding(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbours, res_edge_embedding_dim)
 
-        # Compute residue node embeddings
         res_embedding = self._res_embedding(coords, mask)  # Shape: (batch_size, max_len, res_embedding_dim)
         res_embedding = self.graph_norm(res_embedding, mask)
-
         return res_embedding, res_edge_embedding, edge_index

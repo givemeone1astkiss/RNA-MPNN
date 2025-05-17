@@ -217,7 +217,6 @@ class RNADataset(Dataset):
                         atom_coords[seq_idx] = reference_coords + random_vector
 
         coords_np[np.isnan(coords_np)] = 0
-
         return torch.tensor(coords_np, dtype=torch.float32)
 
     @staticmethod
