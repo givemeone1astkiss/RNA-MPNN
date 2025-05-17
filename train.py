@@ -59,7 +59,7 @@ from rdesign.utils.train import get_trainer
 from rdesign.config.seeds import seeding
 
 seeding()
-model = RNAModel.load_from_checkpoint('out/checkpoints/RDesign-X/checkpoint-epoch=99-0.ckpt')
-data = RNADataModule.from_defaults(batch_size=16, split_ratio=[0.95, 0.05, 0.0])
-trainer = get_trainer(name='RDesign-X', version=0, max_epochs=0)
+model = RNAModel()
+data = RNADataModule.from_defaults(batch_size=16, split_ratio=[0.9, 0.1, 0.0])
+trainer = get_trainer(name='RDesign-X', version=1, max_epochs=80)
 trainer.fit(model, data)

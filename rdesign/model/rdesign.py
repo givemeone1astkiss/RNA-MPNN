@@ -328,7 +328,7 @@ class RNAModel(pl.LightningModule):
                 hidden_dim: int = 128,
                 vocab_size: int = 4,
                 k_neighbors: int = 4,
-                dropout: float = 0.3,
+                dropout: float = 0.2,
                 node_feat_types=None,
                 edge_feat_types=None,
                 num_mpnn_layers: int = 10,
