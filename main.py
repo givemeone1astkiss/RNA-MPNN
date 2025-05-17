@@ -1,6 +1,6 @@
 from rnampnn.utils.seed import seeding
 from rnampnn.model.rnampnn import RNAMPNN
-from rnampnn.config.glob import BEST_CKPT
+from rnampnn.config.glob import BEST_CKPT, DATA_PATH, OUTPUT_PATH
 from rnampnn.utils.predict import predict
 import torch
 
@@ -11,6 +11,6 @@ if __name__ == "__main__":
 
     # Predict using the model
     try:
-        predict(model, batch_size=2)
+        predict(model, batch_size=2, data_path=DATA_PATH, output_path=OUTPUT_PATH)
     except torch.OutOfMemoryError:
-        predict(model, batch_size=1)
+        predict(model, batch_size=1, data_path=DATA_PATH, output_path=OUTPUT_PATH)

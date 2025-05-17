@@ -1,14 +1,20 @@
+from typing import Any
 import torch
 import torch.nn as nn
 from pytorch_lightning import LightningModule
 import os
 import csv
-from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, REVERSE_VOCAB, NUM_RES_TYPES, DEFAULT_SEED
+
+from torch.nn.functional import embedding
+
+from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, REVERSE_VOCAB, NUM_RES_TYPES, DEFAULT_SEED, OUTPUT_PATH
 from torch.nn import functional as F
 from .mpnn import  ResMPNN
 from .feature import  ResFeature
-from .functional import BertReadout
+from .functional import RNABert
 import xgboost as xgb
+import pickle
+
 
 
 class RNAMPNN(LightningModule):
@@ -38,11 +44,11 @@ class RNAMPNN(LightningModule):
                  dropout: float = 0.4,
                  lr: float = 2e-3,
                  weight_decay: float = 0.0002,
-                 n_estimators=100,
-                 xgb_max_depth=6,
-                 xgb_learning_rate=0.1,
-                 xgb_subsample=0.8,
-                 xgb_colsample_bytree=0.8,):
+                 n_estimators: int=100,
+                 xgb_max_depth: int=6,
+                 xgb_learning_rate: float=0.1,
+                 xgb_subsample: float=0.8,
+                 xgb_colsample_bytree: float=0.8,):
         """
         Initialize the RNAMPNN model.
 
@@ -79,6 +85,8 @@ class RNAMPNN(LightningModule):
             xgb_colsample_bytree (float): Subsample ratio of columns when constructing each tree for the XGBoost model.
         """
         super().__init__()
+        self.name = 'RNAMPNN-X'
+        self.version = 0
         self.save_hyperparameters()
         self.res_feature = ResFeature(num_neighbours=num_res_neighbours,
                                       num_inside_dist_atoms=num_inside_dist_atoms,
@@ -97,14 +105,14 @@ class RNAMPNN(LightningModule):
                                       num_edge_layers=depth_res_edge_feature,
                                       dropout=dropout)
         self.res_mpnn_layers = nn.ModuleList([ResMPNN(res_embedding_dim=res_embedding_dim, res_edge_embedding_dim=res_edge_embedding_dim, depth_res_mpnn=depth_res_mpnn, num_edge_layers=num_mpnn_edge_layers, dropout=dropout) for _ in range(num_res_mpnn_layers)])
-        self.readout = BertReadout(padding_len=padding_len,
-                                   res_embedding_dim=res_embedding_dim,
-                                   num_attn_layers=num_readout_attn_layers,
-                                   num_heads=num_readout_heads,
-                                   ffn_dim=readout_ffn_dim,
-                                   num_ffn_layers=num_readout_ffn_layers,
-                                   dropout=dropout)
-
+        self.post_fusion = RNABert(padding_len=padding_len,
+                               res_embedding_dim=res_embedding_dim,
+                               num_attn_layers=num_readout_attn_layers,
+                               num_heads=num_readout_heads,
+                               ffn_dim=readout_ffn_dim,
+                               num_ffn_layers=num_readout_ffn_layers,
+                               dropout=dropout)
+        self.readout = nn.Linear(res_embedding_dim, NUM_RES_TYPES)
         self.xgb_readout = xgb.XGBClassifier(
             objective='multi:softmax',
             num_class=NUM_RES_TYPES,
@@ -143,12 +151,10 @@ class RNAMPNN(LightningModule):
             torch.cuda.empty_cache()
         for layer in self.res_mpnn_layers:
             res_embedding, res_edge_embedding = layer(res_embedding, res_edge_embedding, edge_index, mask)
+        res_embedding = self.post_fusion(res_embedding, mask)
+        logits = self.readout(res_embedding) * mask.unsqueeze(-1)
         if is_predict:
-            del res_edge_embedding, edge_index
-            torch.cuda.empty_cache()
-        logits = self.readout(res_embedding, mask)
-        if is_predict:
-            del res_embedding
+            del res_edge_embedding, edge_index, res_embedding, mask
             torch.cuda.empty_cache()
         return logits
 
@@ -223,6 +229,7 @@ class RNAMPNN(LightningModule):
             torch.cuda.empty_cache()
         for layer in self.res_mpnn_layers:
             res_embedding, _ = layer(res_embedding, res_edge_embedding, edge_index, mask)
+        res_embedding = self.post_fusion(res_embedding, mask)
         return  res_embedding
 
     def predict(self, batch, batch_id, output_dir, filename):
@@ -242,19 +249,13 @@ class RNAMPNN(LightningModule):
 
         # logits = self(coords, mask, is_predict=True)
         # predictions = torch.argmax(logits, dim=-1)  # Shape: (batch_size, max_len)
-        embedding = self.embedding(coords, mask, is_predict=True)
-        valid_embedding = embedding[mask.bool()]
-        valid_predictions = self.xgb_readout.predict(valid_embedding.cpu())
-        predictions = torch.zeros(coords.size(0), coords.size(1), dtype=torch.long).to(self.device)
-        lengths = mask.sum(dim=-1)
-        start = 0
-        for i in range(coords.size(0)):
-            end = int(lengths[i].item())
-            predictions[i][start:end] = torch.tensor(valid_predictions[start:end], dtype=torch.long).to(self.device)
-            start += end
+        batch_size = coords.shape[0]
+        max_len = coords.shape[1]
+        embedding = self.embedding(coords, mask).reshape(batch_size * max_len, -1).to(device=torch.device(torch.device('cpu')))
+        predictions = self.xgb_readout.predict(embedding.detach().numpy()).reshape(batch_size, max_len)
 
         rna_sequences = []
-        for i in range(predictions.size(0)):
+        for i in range(predictions.shape[0]):
             # Extract valid residues based on the mask
             valid_indices = mask[i] == 1
             seq = "".join([REVERSE_VOCAB[idx] for idx in predictions[i][valid_indices].tolist()])
@@ -271,4 +272,27 @@ class RNAMPNN(LightningModule):
             for pdb, seq in zip(pdb_id, rna_sequences):
                 writer.writerow([pdb, seq])
 
+    def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        """
+        Load the model from a checkpoint.
 
+        Args:
+            checkpoint (dict): The checkpoint dictionary containing the model state.
+        """
+        super().on_load_checkpoint(checkpoint)
+        self.xgb_readout = xgb.XGBClassifier(
+            objective='multi:softmax',
+            num_class=NUM_RES_TYPES,
+            n_estimators=self.hparams.n_estimators,
+            max_depth=self.hparams.xgb_max_depth,
+            learning_rate=self.hparams.xgb_learning_rate,
+            subsample=self.hparams.xgb_subsample,
+            colsample_bytree=self.hparams.xgb_colsample_bytree,
+            random_state=DEFAULT_SEED
+        )
+        try:
+            with open(f"{OUTPUT_PATH}/checkpoints/{self.name}/XGB-V{self.version}.pkl", 'rb') as f:
+                self.xgb_readout = pickle.load(f)
+        except FileNotFoundError:
+            print("=========  XGBoost model not found. Please train the model first.  =========")
+        print("=========  Model loaded successfully from checkpoint.  =========")

@@ -159,57 +159,7 @@ class RNABert(nn.Module):
                                 dim=1)
         return padded_res_embedding, padded_mask
 
-
-class BertReadout(RNABert):
-    def __init__(self,
-                 padding_len: int,
-                 res_embedding_dim: int,
-                 num_attn_layers: int,
-                 num_heads: int,
-                 ffn_dim: int,
-                 num_ffn_layers: int,
-                 dropout: float = 0.1):
-        super().__init__(padding_len, res_embedding_dim, num_attn_layers, num_heads, ffn_dim, num_ffn_layers, dropout=dropout)
-
-        self.readout_project = nn.Linear(res_embedding_dim, NUM_RES_TYPES)
-
     def forward(self, res_embedding: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        padded_res_embedding, padded_mask = self._padding(res_embedding, mask)
-        attention_mask = ~padded_mask.bool()
-        for attention_layer, norm_layer in zip(self.bi_attention_layers, self.graph_norm_layers):
-            padded_res_embedding += attention_layer(query=padded_res_embedding,
-                                                key=padded_res_embedding,
-                                                value=padded_res_embedding,
-                                                key_padding_mask=attention_mask)[0]
-            padded_res_embedding = norm_layer(padded_res_embedding, padded_mask)
-        padded_res_embedding = self.ffn_layers(padded_res_embedding)
-        logits = self.readout_project(padded_res_embedding)
-        logits *= padded_mask.unsqueeze(-1)
-        return logits[:, :res_embedding.shape[1], :]
-
-
-class BertEmbedding(RNABert):
-    def __init__(self,
-                 raw_dim: int,
-                 padding_len: int,
-                 res_embedding_dim: int,
-                 num_attn_layers: int,
-                 num_heads: int,
-                 ffn_dim: int,
-                 num_ffn_layers: int,
-                 dropout: float = 0.1):
-        super().__init__(padding_len,
-                         res_embedding_dim,
-                         num_attn_layers,
-                         num_heads,
-                         ffn_dim,
-                         num_ffn_layers,
-                         dropout=dropout)
-
-        self.raw_project = nn.Linear(raw_dim, res_embedding_dim)
-
-    def forward(self, raw_edge_features: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        res_embedding = self.raw_project(raw_edge_features)
         padded_res_embedding, padded_mask = self._padding(res_embedding, mask)
         attention_mask = ~padded_mask.bool()
         for attention_layer, norm_layer in zip(self.bi_attention_layers, self.graph_norm_layers):
