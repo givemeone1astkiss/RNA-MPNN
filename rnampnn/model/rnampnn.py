@@ -4,9 +4,6 @@ import torch.nn as nn
 from pytorch_lightning import LightningModule
 import os
 import csv
-
-from torch.nn.functional import embedding
-
 from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, REVERSE_VOCAB, NUM_RES_TYPES, DEFAULT_SEED, OUTPUT_PATH
 from torch.nn import functional as F
 from .mpnn import  ResMPNN
@@ -159,11 +156,18 @@ class RNAMPNN(LightningModule):
         return logits
 
     def training_step(self, batch):
+        """
+        Perform a training step, computing loss and logging metrics.
+        Args:
+            batch: A batch of training data.
+
+        Returns:
+            torch.Tensor: The computed loss for the training step.
+        """
         sequences, coords, mask, _ = batch
         sequences = sequences.to(self.device)
         coords = coords.to(self.device)
         mask = mask.to(self.device)
-
         logits = self(coords, mask)
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
@@ -187,7 +191,6 @@ class RNAMPNN(LightningModule):
         sequences = sequences.to(self.device)
         coords = coords.to(self.device)
         mask = mask.to(self.device)
-
         logits = self(coords, mask)
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
@@ -195,7 +198,7 @@ class RNAMPNN(LightningModule):
         loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1), valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
         correct = (valid_probs.argmax(dim=-1) == valid_sequences.argmax(dim=-1)).to(dtype=torch.float32)
         self.val_step_outputs.append({'val_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]})
-        return {'val_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]}
+        return self.val_step_outputs[-1]
 
 
     def test_step(self, batch):
@@ -212,7 +215,6 @@ class RNAMPNN(LightningModule):
         sequences = sequences.to(self.device)
         coords = coords.to(self.device)
         mask = mask.to(self.device)
-
         logits = self(coords, mask)
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
@@ -220,7 +222,7 @@ class RNAMPNN(LightningModule):
         loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1), valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
         correct = (valid_probs.argmax(dim=-1) == valid_sequences.argmax(dim=-1)).to(dtype=torch.float32)
         self.test_step_output.append({'test_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]})
-        return {'test_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]}
+        return self.test_step_output[-1]
 
     def embedding(self, coords: torch.Tensor, mask: torch.Tensor, is_predict: bool=False) -> torch.Tensor:
         res_embedding, res_edge_embedding, edge_index = self.res_feature(coords, mask)

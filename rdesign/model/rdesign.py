@@ -1,14 +1,45 @@
 import torch
+from typing import Any, Optional
 import torch.nn as nn
 from pytorch_lightning.utilities.types import STEP_OUTPUT
-from torch_scatter import scatter_sum
 import numpy as np
 import torch.nn.functional as F
 from typing_extensions import final
 import os
-from ..config.glob import FEAT_DIMS
+from ..config.glob import FEAT_DIMS, NUM_RES_TYPES, DEFAULT_SEED, OUTPUT_PATH
 from ..utils.data import normalize
 import pytorch_lightning as pl
+import xgboost as xgb
+import pickle
+
+
+def scatter_sum(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
+                out: Optional[torch.Tensor] = None,
+                dim_size: Optional[int] = None) -> torch.Tensor:
+    index = broadcast(index, src, dim)
+    if out is None:
+        size = list(src.size())
+        if dim_size is not None:
+            size[dim] = dim_size
+        elif index.numel() == 0:
+            size[dim] = 0
+        else:
+            size[dim] = int(index.max()) + 1
+        out = torch.zeros(size, dtype=src.dtype, device=src.device)
+        return out.scatter_add_(dim, index, src)
+    else:
+        return out.scatter_add_(dim, index, src)
+
+def broadcast(src: torch.Tensor, other: torch.Tensor, dim: int):
+    if dim < 0:
+        dim = other.dim() + dim
+    if src.dim() == 1:
+        for _ in range(0, dim):
+            src = src.unsqueeze(0)
+    for _ in range(src.dim(), other.dim()):
+        src = src.unsqueeze(-1)
+    src = src.expand(other.size())
+    return src
 
 class MPNNLayer(nn.Module):
     def __init__(self, num_hidden, num_in, dropout=0.1, scale=30):
@@ -301,14 +332,21 @@ class RNAModel(pl.LightningModule):
                 node_feat_types=None,
                 edge_feat_types=None,
                 num_mpnn_layers: int = 10,
-                lr: float = 0.001
-                ):
+                lr: float = 0.001,
+                n_estimators: int = 100,
+                xgb_max_depth: int = 6,
+                xgb_learning_rate: float = 0.1,
+                xgb_subsample: float = 0.8,
+                xgb_colsample_bytree: float = 0.8,):
         super().__init__()
 
         if edge_feat_types is None:
             edge_feat_types = ['orientation', 'distance', 'direction']
         if node_feat_types is None:
             node_feat_types = ['angle', 'distance', 'direction']
+
+        self.name = 'RDesign-X'
+        self.version = 0
         self.save_hyperparameters()
         self.node_features = self.edge_features = hidden_dim
         self.hidden_dim = hidden_dim
@@ -327,16 +365,28 @@ class RNAModel(pl.LightningModule):
             for _ in range(num_mpnn_layers)])
 
         self.readout = nn.Linear(self.hidden_dim, vocab_size, bias=True)
-        self.loss_fn = nn.CrossEntropyLoss()
 
+        self.xgb_readout = xgb.XGBClassifier(
+            objective='multi:softmax',
+            num_class=NUM_RES_TYPES,
+            n_estimators=n_estimators,
+            max_depth=xgb_max_depth,
+            learning_rate=xgb_learning_rate,
+            subsample=xgb_subsample,
+            colsample_bytree=xgb_colsample_bytree,
+            random_state=DEFAULT_SEED
+        )
+
+        self.loss_fn = nn.CrossEntropyLoss()
+        self.val_step_outputs = []
+        self.test_step_outputs = []
 
     def forward(self, X, S, mask):
         X, S, h_V, h_E, E_idx, batch_id = self.features(X, S, mask)
         for layer in self.mpnn_layers:
             h_EV = torch.cat([h_E, h_V[E_idx[0]], h_V[E_idx[1]]], dim=-1)
             h_V = layer(h_V, h_EV, E_idx)
-        logits = self.readout(h_V)
-        return logits, S
+        return h_V, S
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
@@ -346,7 +396,8 @@ class RNAModel(pl.LightningModule):
         X = X.to(self.device)
         S = S.to(self.device)
         mask = mask.to(self.device)
-        logits, S = self(X, S, mask)
+        h_V, S = self(X, S, mask)
+        logits = self.readout(h_V)
         loss = self.loss_fn(logits, S)
         self.log('train_loss', loss, prog_bar=True, sync_dist=True)
         return loss
@@ -356,25 +407,18 @@ class RNAModel(pl.LightningModule):
         X = X.to(self.device)
         S = S.to(self.device)
         mask = mask.to(self.device)
-        logits, S = self(X, S, mask)
+        h_V, S = self(X, S, mask)
+        logits = self.readout(h_V)
         loss = self.loss_fn(logits, S)
         self.log('val_loss', loss, prog_bar=True, sync_dist=True)
+
         probs = F.softmax(logits, dim=-1)
         samples = probs.argmax(dim=-1)
 
-        recovery_list = []
-        start_idx = 0
-        for length in lengths:
-            end_idx = start_idx + length.item()
-            sample = samples[start_idx:end_idx]
-            gt_S = S[start_idx:end_idx]
-            recovery = (sample == gt_S).sum().item() / len(sample)
-            recovery_list.append(recovery)
-            start_idx = end_idx
+        correct = (samples == S)
 
-        valid_recovery = np.mean(recovery_list)
-        self.log('valid_recovery_rate', valid_recovery, prog_bar=True, sync_dist=True)
-        return {'val_loss': loss, 'valid_recovery_rate': valid_recovery}
+        self.val_step_outputs.append({'val_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]})
+        return {'val_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]}
 
     def test_step(self, batch) -> STEP_OUTPUT:
         X, S, mask, lengths, _ = batch
@@ -382,7 +426,8 @@ class RNAModel(pl.LightningModule):
         S = S.to(self.device)
         mask = mask.to(self.device)
 
-        logits, S = self(X, S, mask)
+        h_V, S = self(X, S, mask)
+        logits = self.readout(h_V)
         loss = self.loss_fn(logits, S)
         self.log('test_loss', loss, prog_bar=True, sync_dist=True)
 
@@ -410,9 +455,8 @@ class RNAModel(pl.LightningModule):
         S = S.to(self.device)
         mask = mask.to(self.device)
 
-        logits, _ = self(X, S, mask)
-        probs = F.softmax(logits, dim=-1)
-        samples = probs.argmax(dim=-1)
+        h_V, _ = self(X, S, mask)
+        samples = self.xgb_readout.predict(h_V.to(device=torch.device(torch.device('cpu'))).detach().numpy())
         start_idx = 0
         sequences = []
         for length, pdb_id in zip(lengths, pdb_ids):
@@ -430,3 +474,28 @@ class RNAModel(pl.LightningModule):
                 f.write("pdb_id,seq\n")
             for pdb_id, seq in sequences:
                 f.write(f"{pdb_id},{seq}\n")
+
+    def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        """
+        Load the model from a checkpoint.
+
+        Args:
+            checkpoint (dict): The checkpoint dictionary containing the model state.
+        """
+        super().on_load_checkpoint(checkpoint)
+        self.xgb_readout = xgb.XGBClassifier(
+            objective='multi:softmax',
+            num_class=NUM_RES_TYPES,
+            n_estimators=self.hparams.n_estimators,
+            max_depth=self.hparams.xgb_max_depth,
+            learning_rate=self.hparams.xgb_learning_rate,
+            subsample=self.hparams.xgb_subsample,
+            colsample_bytree=self.hparams.xgb_colsample_bytree,
+            random_state=DEFAULT_SEED
+        )
+        try:
+            with open(f"{OUTPUT_PATH}/checkpoints/{self.name}/XGB-V{self.version}.pkl", 'rb') as f:
+                self.xgb_readout = pickle.load(f)
+        except FileNotFoundError:
+            print("=========  XGBoost model not found. Please train the model first.  =========")
+        print("=========  Model loaded successfully from checkpoint.  =========")
