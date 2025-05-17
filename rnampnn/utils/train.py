@@ -50,30 +50,26 @@ class XGBTrainer(Callback):
         self.batch_val_correct = []
 
     def on_fit_end(self, trainer: pl.Trainer, model: RNAMPNN) -> None:
+        print('=' * 20, '\n')
         print('Start training XGBoost!\n')
-        X, Y = self._generate_embedding(trainer, model)
+        X, Y = self._generate_embedding(trainer.train_dataloader, model)
         model.xgb_readout.fit(X, Y)
-        for val_batch in tqdm(trainer.val_dataloaders, desc="Validating XGBoost", total=len(trainer.val_dataloaders), position=1):
-            self._xgb_valid_step(model, val_batch)
-        train_loss = model.xgb_readout.score(X, Y)
-        print(f'Training score: {train_loss}\n')
-        val_loss = ((torch.tensor(self.batch_val_length) * torch.tensor(self.batch_val_loss)).sum(dim=-1) / torch.tensor(self.batch_val_length).sum(dim=-1)).to(device=model.device)
-        val_recovery_rate = torch.tensor(self.batch_val_correct).sum(dim=-1) / torch.tensor(self.batch_val_length).sum(dim=-1)
-        print(f'Validation score: {val_loss.item()}\n')
-        print(f'Validation recovery rate: {val_recovery_rate.item()}\n')
-        self.batch_val_loss = []
-        self.batch_val_length = []
-        self.batch_val_correct = []
+        train_score = model.xgb_readout.score(X, Y)
+        print(f'Training score: {train_score}\n')
+        X, Y = self._generate_embedding(trainer.val_dataloaders, model)
+        val_score = model.xgb_readout.score(X, Y)
+        print('Start validation!\n')
+        print(f'Validation score: {val_score}\n')
         print('XGBoost training done!')
-
+        print('=' * 20, '\n')
         with open(f"{OUTPUT_PATH}/checkpoints/{model.name}/XGB-V{model.version}.pkl", 'wb') as f:
             pickle.dump(model.xgb_readout, f)
 
     @staticmethod
-    def _generate_embedding( trainer: pl.Trainer, model: RNAMPNN):
+    def _generate_embedding(dataloader: torch.utils.data.DataLoader, model: RNAMPNN):
         X = np.ndarray((0, model.hparams.res_embedding_dim))
-        Y = np.ndarray((0))
-        for batch in tqdm(trainer.train_dataloader, desc="Generating Embedding...", total=len(trainer.train_dataloader), position=0):
+        Y = np.ndarray(0)
+        for batch in tqdm(dataloader, desc="Generating Embedding...", total=len(dataloader), position=0):
             sequences, coords, mask, _ = batch
             sequences = sequences.to(device=model.device)
             coords = coords.to(device=model.device)
@@ -83,17 +79,6 @@ class XGBTrainer(Callback):
             X = np.append(X, embedding.to(device=torch.device(torch.device('cpu'))).detach().numpy(), axis=0)
             Y = np.append(Y, sequences.to(device=torch.device(torch.device('cpu'))).detach().numpy(), axis=0)
         return X, Y
-
-    def _xgb_valid_step(self, model: RNAMPNN, batch):
-        sequences, coords, mask, _ = batch
-        sequences = sequences.to(device=model.device)
-        coords = coords.to(device=model.device)
-        mask = mask.to(device=model.device)
-        embedding = model.embedding(coords, mask)[mask.bool()].to(device=torch.device(torch.device('cpu')))
-        sequences = torch.argmax(sequences[mask.bool()], dim=-1).to(device=torch.device(torch.device('cpu')))
-        self.batch_val_loss.append(model.xgb_readout.score(embedding.detach().numpy(), sequences.detach().numpy()))
-        self.batch_val_correct.append(np.equal(model.xgb_readout.predict(embedding.detach().numpy()),sequences.detach().numpy()).sum())
-        self.batch_val_length.append(sequences.shape[0])
 
 def get_trainer(name: str, version: int, max_epochs: int=60, val_check_interval: int = 1, progress_bar=True):
     logger = pl.loggers.TensorBoardLogger(
@@ -106,9 +91,8 @@ def get_trainer(name: str, version: int, max_epochs: int=60, val_check_interval:
         dirpath=f"{OUTPUT_PATH}/checkpoints/{name}/",
         filename='{epoch:02d}'+f'-{version}',
         save_top_k=1,
-        monitor='val_loss',
-        mode='min',
-        verbose=True
+        monitor='val_recovery_rate',
+        mode='max',
     )
 
     return pl.Trainer(
