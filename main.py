@@ -11,9 +11,9 @@ if __name__ == "__main__":
 
     # Predict using the model
     try:
-        predict(model, batch_size=2, data_path=DATA_PATH, output_path=OUTPUT_PATH)
+        predict(model, batch_size=2)
     except torch.OutOfMemoryError:
-        predict(model, batch_size=1, data_path=DATA_PATH, output_path=OUTPUT_PATH)
+        predict(model, batch_size=1)
 
 # from rdesign.model.rdesign import RNAModel
 # from rdesign.config.glob import BEST_CKPT, DATA_PATH, OUTPUT_PATH
