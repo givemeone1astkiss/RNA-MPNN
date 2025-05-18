@@ -1,7 +1,7 @@
 FROM  pytorchlightning/pytorch_lightning
 LABEL authors="Huazhi Wang"
 
-#ADD rnampnn /app/rnampnn
+ADD rnampnn /app/rnampnn
 ADD rdesign /app/rdesign
 ADD ./out /app/out
 ADD ./run.sh ./main.py /app/
