@@ -295,8 +295,7 @@ class RNAMPNN(LightningModule):
 
         batch_size = coords.shape[0]
         max_len = coords.shape[1]
-        embedding = self.embedding(coords, mask).reshape(batch_size * max_len, -1).to(
-            device=torch.device(torch.device('cpu')))
+        embedding = self.embedding(coords, mask).reshape(batch_size * max_len, -1).to(device=torch.device(torch.device('cpu')))
         predictions = self.xgb_readout.predict(embedding.detach().numpy()).reshape(batch_size, max_len)
 
         rna_sequences = []
@@ -317,6 +316,16 @@ class RNAMPNN(LightningModule):
             for pdb, seq in zip(pdb_id, rna_sequences):
                 writer.writerow([pdb, seq])
 
+    def on_save_checkpoint(self, checkpoint: dict) -> None:
+        """
+        Save model-specific attributes to the checkpoint.
+
+        Args:
+            checkpoint (dict): The checkpoint dictionary.
+        """
+        checkpoint['name'] = self.name
+        checkpoint['version'] = self.version
+
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         """
         Load the model from a checkpoint.
@@ -325,6 +334,8 @@ class RNAMPNN(LightningModule):
             checkpoint (dict): The checkpoint dictionary containing the model state.
         """
         super().on_load_checkpoint(checkpoint)
+        self.name = checkpoint.get('name', 'RNAMPNN-X')
+        self.version = checkpoint.get('version', 0)
         self.xgb_readout = xgb.XGBClassifier(
             objective='multi:softmax',
             num_class=NUM_RES_TYPES,

@@ -266,6 +266,15 @@ class RNADataset(Dataset):
         """
         self.data = [item for item in self.data if item['sequence'].shape[0] >= min_len]
 
+    def filter_by_max_length(self, max_len: int) -> None:
+        """
+                Remove all data points from the dataset where the sequence length is bigger than `max_len`.
+
+                Args:
+                    max_len (int): Minimum sequence length to retain in the dataset.
+                """
+        self.data = [item for item in self.data if item['sequence'].shape[0] <= max_len]
+
     def noise_augmentation(self, num_gen: int) -> None:
         """
         Sample `num_gen` data points with replacement from the dataset and add Gaussian noise
@@ -386,7 +395,14 @@ class RNADataset(Dataset):
         return self.data[idx]
 
 class RNADataModule(LightningDataModule):
-    def __init__(self, data_path=DATA_PATH, split_ratio: float|List[float] = 0.9, batch_size: int=8, noise_augmentation: int|None=None, slice_augmentation: int|None=None, min_len: int|None=None) -> None:
+    def __init__(self,
+                 data_path=DATA_PATH,
+                 split_ratio: float | List[float] = 0.9,
+                 batch_size: int = 8,
+                 noise_augmentation: int | None = None,
+                 slice_augmentation: int | None = None,
+                 min_len: int | None = None,
+                 max_len: int | None = None) -> None:
         """
         Initialize the RNA data module.
         Args:
@@ -403,6 +419,7 @@ class RNADataModule(LightningDataModule):
         self.data_path = data_path
         self.split_ratio = split_ratio
         self.min_len = min_len
+        self.max_len = max_len
         self.batch_size = batch_size
         self.noise_augmentation = noise_augmentation
         self.slice_augmentation = slice_augmentation
@@ -421,6 +438,8 @@ class RNADataModule(LightningDataModule):
                 raw.slice_augmentation(num_gen=self.slice_augmentation)
             if self.min_len is not None:
                 raw.filter_by_min_length(min_len=self.min_len)
+            if self.max_len is not None:
+                raw.filter_by_max_length(max_len=self.max_len)
             self.train_set, self.val_set = self._split_dataset(raw,split_ratio=self.split_ratio)
         if stage == "test" or stage is None:
             self.test_set = RNADataset.from_path(self.data_path, is_predict=True)
