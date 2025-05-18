@@ -66,8 +66,10 @@ class XGBTrainer(Callback):
         print('=' * 20, '\n')
         with open(f"{OUTPUT_PATH}/checkpoints/{model.name}/XGB-V{model.version}.pkl", 'wb') as f:
             pickle.dump(model.xgb_readout, f)
+        trainer.save_checkpoint(f"{OUTPUT_PATH}/checkpoints/{model.name}/Final-V{model.version}.ckpt")
 
-    def _generate_embedding(self, dataloader: torch.utils.data.DataLoader, model: RNAModel):
+    @staticmethod
+    def _generate_embedding(dataloader: torch.utils.data.DataLoader, model: RNAModel):
         embeddings = np.ndarray((0, model.hparams.hidden_dim))
         sequences = np.ndarray(0)
         for batch in tqdm(dataloader, desc="Generating Embedding...", total=len(dataloader), position=0):

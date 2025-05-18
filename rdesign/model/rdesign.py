@@ -331,7 +331,7 @@ class RNAModel(pl.LightningModule):
                 dropout: float = 0.2,
                 node_feat_types=None,
                 edge_feat_types=None,
-                num_mpnn_layers: int = 10,
+                num_mpnn_layers: int = 8,
                 lr: float = 0.001,
                 n_estimators: int = 100,
                 xgb_max_depth: int = 6,

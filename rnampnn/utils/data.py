@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 import os
 import random
 import torch
+import pandas as pd
+import seaborn as sns
 
 
 def analyse_dataset(path=f'{DATA_PATH}seqs/'):
@@ -516,3 +518,69 @@ class RNADataModule(LightningDataModule):
             start_idx += size
 
         return tuple(subsets)
+
+def gen_seq_csv(data_path: str=f'{DATA_PATH}seqs/', output_path: str=f'{DATA_PATH}ref.csv'):
+    content_dict = {
+        "pdb_id": [],
+        "seq": []
+    }
+
+    fasta_files = os.listdir(data_path)
+
+    for file in tqdm(fasta_files, desc="Reading files", unit="file"):
+        file_path = os.path.join(data_path, file)
+        try:
+            for record in SeqIO.parse(file_path, "fasta"):
+                content_dict["pdb_id"].append(record.id)
+                content_dict["seq"].append(str(record.seq))
+        except Exception as e:
+            print(f"Error reading file {file}: {e}")
+
+    df = pd.DataFrame(content_dict)
+    df.to_csv(output_path, index=False)
+    print(f"CSV file saved at {output_path}")
+
+def cal_recovery_rate(pred_path: str, ref_path: str, output_path: str=f'{DATA_PATH}recovery.csv'):
+    pred_df = pd.read_csv(pred_path)
+    ref_df = pd.read_csv(ref_path)
+
+    merged_df = pd.merge(ref_df, pred_df, on='pdb_id', suffixes=('_ref', '_pred'))
+
+    recovery_data = []
+    for _, row in tqdm(merged_df.iterrows(), desc="Calculating recovery rates", total=len(merged_df)):
+        ref_seq = row['seq_ref']
+        pred_seq = row['seq_pred']
+        length = len(ref_seq)
+        recovery_rate = sum(1 for r, p in zip(ref_seq, pred_seq) if r == p) / length
+        recovery_data.append({
+            'pdb_id': row['pdb_id'],
+            'recovery_rate': recovery_rate,
+            'length': length
+        })
+
+    recovery_df = pd.DataFrame(recovery_data)
+    recovery_df.to_csv(output_path, index=False)
+    print(f"Recovery rates saved at {output_path}")
+
+def draw_recovery_scatter(recovery_path: str, output_path: str=f'{DATA_PATH}recovery_scatter.png'):
+    recovery_df = pd.read_csv(recovery_path)
+    plt.figure(figsize=(10, 6))
+    sns.scatterplot(data=recovery_df, x='length', y='recovery_rate')
+    plt.title('Recovery Rate vs Length')
+    plt.xlabel('Length')
+    plt.ylabel('Recovery Rate')
+    plt.savefig(output_path)
+    print(f"Scatter plot saved at {output_path}")
+
+def separate(concat: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+    batch_size = lengths.shape[0]
+    max_length = int(lengths.max().item())
+    separated = torch.zeros((batch_size, max_length), dtype=concat.dtype)
+
+    start_idx = 0
+    for i, length in enumerate(lengths):
+        end_idx = start_idx + int(length.item())
+        separated[i, :int(length.item())] = concat[start_idx:end_idx]
+        start_idx = end_idx
+
+    return separated

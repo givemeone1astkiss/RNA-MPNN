@@ -50,18 +50,18 @@ class GraphNormalization(nn.Module):
 
 
 class Readout(nn.Module):
-    def __init__(self, res_embedding_dim: int, readout_hidden_dim: int, num_layers: int, dropout: float = 0.1):
+    def __init__(self, embedding_dim: int, readout_hidden_dim: int, num_layers: int, dropout: float = 0.1):
         """
         Initialize the Readout module for residue-level classification.
         Args:
-            res_embedding_dim: The dimension of the residue embedding.
+            embedding_dim: The dimension of the residue embedding.
             readout_hidden_dim: The dimension of the hidden layers in the readout network.
             num_layers: The number of layers in the readout network.
             dropout: The dropout rate for regularization.
         """
         super().__init__()
         layers = []
-        input_dim = res_embedding_dim
+        input_dim = embedding_dim
 
         # Build feedforward layers
         for _ in range(num_layers - 1):
@@ -77,7 +77,7 @@ class Readout(nn.Module):
     def forward(self, res_embedding: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            res_embedding (torch.Tensor): Node features of shape (batch_size, max_len, res_embedding_dim).
+            res_embedding (torch.Tensor): Node features of shape (batch_size, max_len, embedding_dim).
             mask (torch.Tensor): Mask indicating valid residues of shape (batch_size, max_len).
 
         Returns:
@@ -171,3 +171,33 @@ class RNABert(nn.Module):
         padded_res_embedding = self.ffn_layers(padded_res_embedding)
         padded_res_embedding *= padded_mask.unsqueeze(-1)
         return padded_res_embedding[:, :res_embedding.shape[1], :]
+
+
+class RawFFN(nn.Module):
+    def __init__(self, raw_dim: int, num_raw_ffn_dim: int, num_raw_ffn_layers: int, raw_embedding_dim: int, dropout: float = 0.1):
+        super().__init__()
+
+        layers = []
+        input_dim = raw_dim
+        for _ in range(num_raw_ffn_layers):
+            layers.append(nn.Linear(input_dim, num_raw_ffn_dim))
+            layers.append(nn.GELU())
+            layers.append(nn.Dropout(dropout))
+            input_dim = num_raw_ffn_dim
+        layers.append(nn.Linear(num_raw_ffn_dim, raw_embedding_dim))
+        self.raw_ffn = nn.Sequential(*layers)
+
+        self.graph_norm = GraphNormalization(raw_embedding_dim)
+
+    def forward(self, raw: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            raw (torch.Tensor): Residue-level raw features of shape (batch_size, max_len, raw_dim).
+            mask (torch.Tensor): Mask indicating valid residues of shape (batch_size, max_len).
+
+        Returns:
+            res_embedding (torch.Tensor): Residue-level features of shape (batch_size, max_len, raw_embedding_dim).
+        """
+        raw = self.raw_ffn(raw)
+        res_embedding = self.graph_norm(raw, mask)
+        return res_embedding

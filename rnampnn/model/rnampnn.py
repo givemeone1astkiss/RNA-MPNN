@@ -8,9 +8,10 @@ from ..config.glob import NUM_MAIN_SEQ_ATOMS, DEFAULT_HIDDEN_DIM, REVERSE_VOCAB,
 from torch.nn import functional as F
 from .mpnn import  ResMPNN
 from .feature import  ResFeature
-from .functional import RNABert
+from .functional import RNABert, RawFFN, Readout
 import xgboost as xgb
 import pickle
+from ..utils.data import separate
 
 
 
@@ -34,15 +35,20 @@ class RNAMPNN(LightningModule):
                  depth_res_mpnn: int = 2,
                  num_mpnn_edge_layers: int = 2,
                  padding_len: int = 4500,
-                 num_readout_attn_layers: int = 2,
-                 num_readout_heads: int = 8,
-                 readout_ffn_dim: int = 512,
-                 num_readout_ffn_layers: int = 3,
+                 num_post_fusion_attn_layers: int = 2,
+                 num_post_fusion_heads: int = 8,
+                 post_fusion_ffn_dim: int = 512,
+                 num_post_fusion_ffn_layers: int = 3,
+                 num_raw_ffn_dim: int = 512,
+                 num_raw_ffn_layers: int = 3,
+                 raw_embedding_dim: int = DEFAULT_HIDDEN_DIM,
+                 readout_hidden_dim: int = 512,
+                 num_readout_layers: int = 2,
                  dropout: float = 0.4,
                  lr: float = 2e-3,
                  weight_decay: float = 0.0002,
-                 n_estimators: int=100,
-                 xgb_max_depth: int=6,
+                 n_estimators: int=150,
+                 xgb_max_depth: int=8,
                  xgb_learning_rate: float=0.1,
                  xgb_subsample: float=0.8,
                  xgb_colsample_bytree: float=0.8,):
@@ -68,10 +74,10 @@ class RNAMPNN(LightningModule):
             depth_res_mpnn (int): Depth of the MPNN layers.
             num_mpnn_edge_layers (int): Number of edge layers in the MPNN.
             padding_len (int): Length of the padding for sequences.
-            num_readout_attn_layers (int): Number of attention layers in the readout module.
-            num_readout_heads (int): Number of attention heads in the readout module.
-            readout_ffn_dim (int): Dimension of feedforward network in the readout module.
-            num_readout_ffn_layers (int): Number of feedforward layers in the readout module.
+            num_post_fusion_attn_layers (int): Number of attention layers in the post fusion module.
+            num_post_fusion_heads (int): Number of attention heads in the post fusion module.
+            post_fusion_ffn_dim (int): Dimension of feedforward network in the post fusion module.
+            num_post_fusion_ffn_layers (int): Number of feedforward layers in the post fusion module.
             dropout (float): Dropout rate for regularization.
             lr (float): Learning rate for the optimizer.
             weight_decay (float): Weight decay for the optimizer.
@@ -101,15 +107,32 @@ class RNAMPNN(LightningModule):
                                       res_edge_embedding_dim=res_edge_embedding_dim,
                                       num_edge_layers=depth_res_edge_feature,
                                       dropout=dropout)
-        self.res_mpnn_layers = nn.ModuleList([ResMPNN(res_embedding_dim=res_embedding_dim, res_edge_embedding_dim=res_edge_embedding_dim, depth_res_mpnn=depth_res_mpnn, num_edge_layers=num_mpnn_edge_layers, dropout=dropout) for _ in range(num_res_mpnn_layers)])
+
+        self.res_mpnn_layers = nn.ModuleList([ResMPNN(res_embedding_dim=res_embedding_dim,
+                                                      res_edge_embedding_dim=res_edge_embedding_dim,
+                                                      depth_res_mpnn=depth_res_mpnn,
+                                                      num_edge_layers=num_mpnn_edge_layers,
+                                                      dropout=dropout) for _ in range(num_res_mpnn_layers)])
+
         self.post_fusion = RNABert(padding_len=padding_len,
                                res_embedding_dim=res_embedding_dim,
-                               num_attn_layers=num_readout_attn_layers,
-                               num_heads=num_readout_heads,
-                               ffn_dim=readout_ffn_dim,
-                               num_ffn_layers=num_readout_ffn_layers,
+                               num_attn_layers=num_post_fusion_attn_layers,
+                               num_heads=num_post_fusion_heads,
+                               ffn_dim=post_fusion_ffn_dim,
+                               num_ffn_layers=num_post_fusion_ffn_layers,
                                dropout=dropout)
-        self.readout = nn.Linear(res_embedding_dim, NUM_RES_TYPES)
+
+        self.raw_embedding = RawFFN(raw_dim=self.res_feature.raw_dim,
+                                    num_raw_ffn_layers=num_raw_ffn_layers,
+                                    num_raw_ffn_dim=num_raw_ffn_dim,
+                                    raw_embedding_dim=raw_embedding_dim,
+                                    dropout=dropout)
+
+        self.readout = Readout(embedding_dim=raw_embedding_dim + res_embedding_dim,
+                               readout_hidden_dim=readout_hidden_dim,
+                               num_layers=num_readout_layers,
+                               dropout=dropout)
+
         self.xgb_readout = xgb.XGBClassifier(
             objective='multi:softmax',
             num_class=NUM_RES_TYPES,
@@ -122,12 +145,12 @@ class RNAMPNN(LightningModule):
         )
 
         self.loss_fn = nn.CrossEntropyLoss()
-        self.val_step_outputs = []
-        self.test_step_outputs = []
+        self.val_step_outputs = {'val_loss':[], 'correct':[], 'len':[], 'recovery_rates':[]}
+        self.test_step_outputs = {'test_loss':[], 'correct':[], 'len':[], 'recovery_rates':[]}
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.8)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.8)
         return [optimizer], [scheduler]
 
     def forward(self, coords: torch.Tensor, mask: torch.Tensor, is_predict: bool=False) -> torch.Tensor:
@@ -142,14 +165,15 @@ class RNAMPNN(LightningModule):
         Returns:
             torch.Tensor: Predicted residue type logits of shape (batch_size, max_len, NUM_MAIN_SEQ_ATOMS).
         """
-        res_embedding, res_edge_embedding, edge_index = self.res_feature(coords, mask)
+        raw, res_embedding, res_edge_embedding, edge_index = self.res_feature(coords, mask)
         if is_predict:
             del coords
             torch.cuda.empty_cache()
         for layer in self.res_mpnn_layers:
             res_embedding, res_edge_embedding = layer(res_embedding, res_edge_embedding, edge_index, mask)
         res_embedding = self.post_fusion(res_embedding, mask)
-        logits = self.readout(res_embedding) * mask.unsqueeze(-1)
+        raw_embedding = self.raw_embedding(raw, mask)
+        logits = self.readout(torch.cat((res_embedding, raw_embedding), dim=-1), mask)
         if is_predict:
             del res_edge_embedding, edge_index, res_embedding, mask
             torch.cuda.empty_cache()
@@ -172,8 +196,10 @@ class RNAMPNN(LightningModule):
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
-        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1), valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
-        self.log('train_loss', loss, prog_bar=True, sync_dist=True, batch_size=2)
+        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(
+            valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1),
+            valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
+        self.log('train_loss', loss, prog_bar=True, sync_dist=True)
 
         return loss
 
@@ -195,10 +221,18 @@ class RNAMPNN(LightningModule):
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
-        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1), valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
+        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(
+            valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1),
+            valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
         correct = (valid_probs.argmax(dim=-1) == valid_sequences.argmax(dim=-1)).to(dtype=torch.float32)
-        self.val_step_outputs.append({'val_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]})
-        return self.val_step_outputs[-1]
+        sep_correct = separate(correct, torch.sum(mask, dim=-1)).to(device=self.device)
+        recovery_rates = (sep_correct.sum(dim=-1) / torch.sum(mask, dim=-1)).tolist()
+        self.val_step_outputs['val_loss'].append(loss * correct.shape[0])
+        self.val_step_outputs['correct'].append(correct.sum(dim=-1).item())
+        self.val_step_outputs['len'].append(correct.shape[0])
+        self.val_step_outputs['recovery_rates'] += recovery_rates
+
+        return {'validation loss': loss, 'recovery_rates': recovery_rates}
 
 
     def test_step(self, batch):
@@ -219,20 +253,30 @@ class RNAMPNN(LightningModule):
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
-        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1), valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
+        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(
+            valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1),
+            valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
         correct = (valid_probs.argmax(dim=-1) == valid_sequences.argmax(dim=-1)).to(dtype=torch.float32)
-        self.test_step_output.append({'test_loss': loss, 'correct': correct.sum(dim=-1).item(), 'len': correct.shape[0]})
-        return self.test_step_output[-1]
+        sep_correct = separate(correct, torch.sum(mask, dim=-1))
+        recovery_rates = (sep_correct.sum(dim=-1) / torch.sum(mask, dim=-1)).tolist()
+
+        self.test_step_outputs['val_loss'].append(loss * correct.shape[0])
+        self.test_step_outputs['correct'].append(correct.sum(dim=-1).item())
+        self.test_step_outputs['len'].append(correct.shape[0])
+        self.test_step_outputs['recovery_rates'] += recovery_rates
+
+        return {'test loss': loss, 'recovery_rates': recovery_rates}
 
     def embedding(self, coords: torch.Tensor, mask: torch.Tensor, is_predict: bool=False) -> torch.Tensor:
-        res_embedding, res_edge_embedding, edge_index = self.res_feature(coords, mask)
+        raw, res_embedding, res_edge_embedding, edge_index = self.res_feature(coords, mask)
         if is_predict:
             del coords
             torch.cuda.empty_cache()
         for layer in self.res_mpnn_layers:
             res_embedding, _ = layer(res_embedding, res_edge_embedding, edge_index, mask)
         res_embedding = self.post_fusion(res_embedding, mask)
-        return  res_embedding
+        raw_embedding = self.raw_embedding(raw, mask)
+        return  torch.cat((res_embedding, raw_embedding), dim=-1)
 
     def predict(self, batch, batch_id, output_dir, filename):
         """
@@ -249,11 +293,10 @@ class RNAMPNN(LightningModule):
         coords = coords.to(self.device)
         mask = mask.to(self.device)
 
-        # logits = self(coords, mask, is_predict=True)
-        # predictions = torch.argmax(logits, dim=-1)  # Shape: (batch_size, max_len)
         batch_size = coords.shape[0]
         max_len = coords.shape[1]
-        embedding = self.embedding(coords, mask).reshape(batch_size * max_len, -1).to(device=torch.device(torch.device('cpu')))
+        embedding = self.embedding(coords, mask).reshape(batch_size * max_len, -1).to(
+            device=torch.device(torch.device('cpu')))
         predictions = self.xgb_readout.predict(embedding.detach().numpy()).reshape(batch_size, max_len)
 
         rna_sequences = []

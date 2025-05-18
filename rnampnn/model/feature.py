@@ -1,7 +1,7 @@
-from torch import nn
+from torch import nn, Tensor
 import torch
 from ..config.glob import DEFAULT_HIDDEN_DIM, NUM_MAIN_SEQ_ATOMS, LEPS, SEPS
-from typing import Tuple
+from typing import Tuple, Any
 from torch.nn import functional as F
 from .functional import GraphNormalization, RNABert
 
@@ -178,10 +178,10 @@ class ResFeature(nn.Module):
         self.num_cross_angle_atoms = num_cross_angle_atoms
         assert num_cross_dihedral_atoms >= 4, f"num_cross_dihedral_atoms({num_cross_dihedral_atoms}) must be at least 4 for cross dihedral calculation."
         self.num_cross_dihedral_atoms = num_cross_dihedral_atoms
-        raw_dim = num_inside_dist_atoms * (num_inside_dist_atoms - 1) // 2 + num_inside_angle_atoms - 2 + num_inside_dihedral_atoms - 3
+        self.raw_dim = num_inside_dist_atoms * (num_inside_dist_atoms - 1) // 2 + num_inside_angle_atoms - 2 + num_inside_dihedral_atoms - 3
         raw_edge_dim = num_cross_dist_atoms ** 2 + (num_cross_angle_atoms - 1) ** 2 + (num_cross_dihedral_atoms - 2) ** 2
 
-        self.raw_project = nn.Linear(raw_dim, res_embedding_dim)
+        self.raw_project = nn.Linear(self.raw_dim, res_embedding_dim)
         self.res_embedding = RNABert(padding_len=padding_len,
                                        res_embedding_dim=res_embedding_dim,
                                        num_attn_layers=num_attn_layers,
@@ -516,7 +516,7 @@ class ResFeature(nn.Module):
 
         return cross_dihedrals
 
-    def _res_embedding(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def _res_embedding(self, coords: torch.Tensor, mask: torch.Tensor) -> tuple[Tensor, Any]:
         """
         Compute residue-level graph node features.
 
@@ -525,6 +525,7 @@ class ResFeature(nn.Module):
             mask (torch.Tensor): Residue-level mask of shape (batch_size, max_len).
 
         Returns:
+            raw (torch.Tensor): Raw features of shape (batch_size, max_len, raw_dim).
             res_embedding (torch.Tensor): Residue embedding of shape (batch_size, max_len, res_embedding_dim).
         """
         inside_dists = self._inside_dists(coords, mask)  # Shape: (batch_size, max_len, num_inside_dist_atoms * (num_inside_dist_atoms - 1) / 2)
@@ -534,7 +535,7 @@ class ResFeature(nn.Module):
         raw = torch.cat([inside_dists, inside_angles, inside_dihedrals], dim=-1)  # Shape: (batch_size, max_len, raw_dim)
         res_embedding = self.res_embedding(self.raw_project(raw), mask)  # Shape: (batch_size, max_len, res_embedding_dim)
 
-        return res_embedding
+        return raw, res_embedding
 
     def _res_edge_embedding(self, coords: torch.Tensor, mask: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         """
@@ -569,7 +570,7 @@ class ResFeature(nn.Module):
 
         return res_edge_embedding
 
-    def forward(self, coords: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, coords: torch.Tensor, mask: torch.Tensor) -> tuple[Tensor, Any, Tensor, Tensor]:
         """
         Forward method to compute residue-level graph embeddings.
 
@@ -578,15 +579,14 @@ class ResFeature(nn.Module):
             mask (torch.Tensor): Residue-level mask of shape (batch_size, max_len).
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                - raw: Raw features of shape (batch_size, max_len, raw_dim).
                 - res_embedding: Residue embedding of shape (batch_size, max_len, res_embedding_dim).
                 - res_edge_embedding: Residue edge embedding of shape (batch_size, max_len, num_neighbours, res_edge_embedding_dim).
                 - edge_index: Indices of neighbors of shape (batch_size, max_len, num_neighbours).
         """
-        edge_index = self._get_res_graph(coords, mask)  # Shape: (batch_size, max_len, num_neighbours)
-
-        res_edge_embedding = self._res_edge_embedding(coords, mask, edge_index)  # Shape: (batch_size, max_len, num_neighbours, res_edge_embedding_dim)
-
-        res_embedding = self._res_embedding(coords, mask)  # Shape: (batch_size, max_len, res_embedding_dim)
+        edge_index = self._get_res_graph(coords, mask)
+        res_edge_embedding = self._res_edge_embedding(coords, mask, edge_index)
+        raw, res_embedding = self._res_embedding(coords, mask)
         res_embedding = self.graph_norm(res_embedding, mask)
-        return res_embedding, res_edge_embedding, edge_index
+        return raw, res_embedding, res_edge_embedding, edge_index

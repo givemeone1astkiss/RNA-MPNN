@@ -13,24 +13,30 @@ class LossMonitor(Callback):
         super().__init__()
 
     def on_validation_epoch_end(self, trainer: pl.Trainer, model: RNAMPNN):
-        avg_loss = torch.tensor([x['val_loss'] * x['len'] for x in model.val_step_outputs]).sum(dim=-1).to(device=model.device) / torch.tensor(
-            [x['len'] for x in model.val_step_outputs]).sum(dim=-1).to(device=model.device)
-        avg_recovery_rate = torch.tensor([x['correct'] for x in model.val_step_outputs]).sum(dim=-1).to(device=model.device) / torch.tensor(
-            [x['len'] for x in model.val_step_outputs]).sum(dim=-1).to(device=model.device)
+        avg_loss = torch.tensor(model.val_step_outputs['val_loss']).sum(dim=-1).to(device=model.device) / torch.tensor(
+            model.val_step_outputs['len']).sum(dim=-1).to(device=model.device)
+        weighted_recovery_rate = torch.tensor(model.val_step_outputs['correct']).sum(dim=-1).to(
+            device=model.device) / torch.tensor(
+            model.val_step_outputs['len']).sum(dim=-1).to(device=model.device)
+        recovery_rate = (torch.tensor(model.val_step_outputs['recovery_rates'])).to(device=model.device).mean(dim=-1)
 
         model.log('val_loss', avg_loss, prog_bar=True, sync_dist=True)
-        model.log('val_recovery_rate', avg_recovery_rate, prog_bar=True, sync_dist=True)
-        model.val_step_outputs = []
+        model.log('weighted_val_recovery_rate', weighted_recovery_rate, prog_bar=True, sync_dist=True)
+        model.log('val_recovery_rate', recovery_rate, prog_bar=True, sync_dist=True)
+        model.val_step_outputs = {'val_loss':[], 'correct':[], 'len':[], 'recovery_rates':[]}
 
     def on_test_epoch_end(self, trainer: pl.Trainer, model: RNAMPNN):
-        avg_loss = torch.tensor([x['test_loss'] * x['len'] for x in model.test_step_outputs]).sum(dim=-1).to(device=model.device) / torch.tensor(
-            [x['len'] for x in model.test_step_outputs]).sum(dim=-1).to(device=model.device)
-        avg_recovery_rate = torch.tensor([x['correct'] for x in model.test_step_outputs]).sum(dim=-1).to(device=model.device) / torch.tensor(
-            [x['len'] for x in model.test_step_outputs]).sum(dim=-1).to(device=model.device)
+        avg_loss = torch.tensor(model.test_step_outputs['test_loss']).sum(dim=-1).to(device=model.device) / torch.tensor(
+            model.test_step_outputs['len']).sum(dim=-1).to(device=model.device)
+        weighted_recovery_rate = torch.tensor(model.test_step_outputs['correct']).sum(dim=-1).to(
+            device=model.device) / torch.tensor(
+            model.test_step_outputs['len']).sum(dim=-1).to(device=model.device)
+        recovery_rate = (torch.tensor(model.test_step_outputs['recovery_rates'])).to(device=model.device).mean(dim=-1)
 
         model.log('test_loss', avg_loss, prog_bar=True, sync_dist=True)
-        model.log('test_recovery_rate', avg_recovery_rate, prog_bar=True, sync_dist=True)
-        model.test_step_outputs = []
+        model.log('weighted_test_recovery_rate', weighted_recovery_rate, prog_bar=True, sync_dist=True)
+        model.log('test_recovery_rate', recovery_rate, prog_bar=True, sync_dist=True)
+        model.test_step_outputs = {'test_loss':[], 'correct':[], 'len':[], 'recovery_rates':[]}
 
 class NameModel(Callback):
     def __init__(self, name: str, version: int):
@@ -64,12 +70,13 @@ class XGBTrainer(Callback):
         print('=' * 20, '\n')
         with open(f"{OUTPUT_PATH}/checkpoints/{model.name}/XGB-V{model.version}.pkl", 'wb') as f:
             pickle.dump(model.xgb_readout, f)
+        trainer.save_checkpoint(f"{OUTPUT_PATH}/checkpoints/{model.name}/Final-V{model.version}.ckpt")
 
     @staticmethod
     def _generate_embedding(dataloader: torch.utils.data.DataLoader, model: RNAMPNN):
-        X = np.ndarray((0, model.hparams.res_embedding_dim))
+        X = np.ndarray((0, model.hparams.res_embedding_dim+model.hparams.raw_embedding_dim))
         Y = np.ndarray(0)
-        for batch in tqdm(dataloader, desc="Generating Embedding...", total=len(dataloader), position=0):
+        for batch in tqdm(dataloader, desc="Generating Embedding...", total=len(dataloader)):
             sequences, coords, mask, _ = batch
             sequences = sequences.to(device=model.device)
             coords = coords.to(device=model.device)
