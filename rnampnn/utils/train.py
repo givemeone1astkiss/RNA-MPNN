@@ -38,6 +38,7 @@ class LossMonitor(Callback):
         model.log('test_recovery_rate', recovery_rate, prog_bar=True, sync_dist=True)
         model.test_step_outputs = {'test_loss':[], 'correct':[], 'len':[], 'recovery_rates':[]}
 
+
 class NameModel(Callback):
     def __init__(self, name: str, version: int):
         super().__init__()
@@ -56,6 +57,7 @@ class XGBTrainer(Callback):
         self.batch_val_correct = []
 
     def on_fit_end(self, trainer: pl.Trainer, model: RNAMPNN) -> None:
+        model = RNAMPNN.load_from_checkpoint(f"{OUTPUT_PATH}checkpoints/{model.name}/Final-V{model.version}.ckpt")
         print('=' * 20, '\n')
         print('Start training XGBoost!\n')
         X, Y = self._generate_embedding(trainer.train_dataloader, model)
@@ -68,9 +70,8 @@ class XGBTrainer(Callback):
         print(f'Validation score: {val_score}\n')
         print('XGBoost training done!')
         print('=' * 20, '\n')
-        with open(f"{OUTPUT_PATH}/checkpoints/{model.name}/XGB-V{model.version}.pkl", 'wb') as f:
+        with open(f"{OUTPUT_PATH}checkpoints/{model.name}/XGB-V{model.version}.pkl", 'wb') as f:
             pickle.dump(model.xgb_readout, f)
-        trainer.save_checkpoint(f"{OUTPUT_PATH}/checkpoints/{model.name}/Final-V{model.version}.ckpt")
 
     @staticmethod
     def _generate_embedding(dataloader: torch.utils.data.DataLoader, model: RNAMPNN):
@@ -95,8 +96,8 @@ def get_trainer(name: str, version: int, max_epochs: int=60, val_check_interval:
     )
 
     checkpoint = ModelCheckpoint(
-        dirpath=f"{OUTPUT_PATH}/checkpoints/{name}/",
-        filename='{epoch:02d}'+f'-{version}',
+        dirpath=f"{OUTPUT_PATH}checkpoints/{name}/",
+        filename=f'Final-V{version}',
         save_top_k=1,
         monitor='val_recovery_rate',
         mode='max',

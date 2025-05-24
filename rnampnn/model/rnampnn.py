@@ -115,12 +115,12 @@ class RNAMPNN(LightningModule):
                                                       dropout=dropout) for _ in range(num_res_mpnn_layers)])
 
         self.post_fusion = RNABert(padding_len=padding_len,
-                               res_embedding_dim=res_embedding_dim,
-                               num_attn_layers=num_post_fusion_attn_layers,
-                               num_heads=num_post_fusion_heads,
-                               ffn_dim=post_fusion_ffn_dim,
-                               num_ffn_layers=num_post_fusion_ffn_layers,
-                               dropout=dropout)
+                                   res_embedding_dim=res_embedding_dim,
+                                   num_attn_layers=num_post_fusion_attn_layers,
+                                   num_heads=num_post_fusion_heads,
+                                   ffn_dim=post_fusion_ffn_dim,
+                                   num_ffn_layers=num_post_fusion_ffn_layers,
+                                   dropout=dropout)
 
         self.raw_embedding = RawFFN(raw_dim=self.res_feature.raw_dim,
                                     num_raw_ffn_layers=num_raw_ffn_layers,
@@ -144,9 +144,14 @@ class RNAMPNN(LightningModule):
             random_state= DEFAULT_SEED
         )
 
-        self.loss_fn = nn.CrossEntropyLoss()
+        self.loss_fn = self.mix_loss
         self.val_step_outputs = {'val_loss':[], 'correct':[], 'len':[], 'recovery_rates':[]}
         self.test_step_outputs = {'test_loss':[], 'correct':[], 'len':[], 'recovery_rates':[]}
+
+    @staticmethod
+    def mix_loss(valid_probs, valid_sequences):
+        discriminant_loss = F.cross_entropy(valid_probs, valid_sequences.argmax(dim=-1), reduction='mean')
+        return discriminant_loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
@@ -196,9 +201,7 @@ class RNAMPNN(LightningModule):
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
-        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(
-            valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1),
-            valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
+        loss = self.loss_fn(valid_probs, valid_sequences)
         self.log('train_loss', loss, prog_bar=True, sync_dist=True)
 
         return loss
@@ -221,9 +224,7 @@ class RNAMPNN(LightningModule):
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
-        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(
-            valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1),
-            valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
+        loss = self.loss_fn(valid_probs, valid_sequences)
         correct = (valid_probs.argmax(dim=-1) == valid_sequences.argmax(dim=-1)).to(dtype=torch.float32)
         sep_correct = separate(correct, torch.sum(mask, dim=-1)).to(device=self.device)
         recovery_rates = (sep_correct.sum(dim=-1) / torch.sum(mask, dim=-1)).tolist()
@@ -253,9 +254,7 @@ class RNAMPNN(LightningModule):
         probs = F.softmax(logits, dim=-1)
         valid_probs = probs[mask.bool()]
         valid_sequences = sequences[mask.bool()]
-        loss = self.loss_fn(valid_probs, valid_sequences) + self.loss_fn(
-            valid_probs.reshape(valid_probs.shape[0], 2, 2).sum(dim=-1),
-            valid_sequences.reshape(valid_sequences.shape[0], 2, 2).sum(dim=-1))
+        loss = self.loss_fn(valid_probs, valid_sequences)
         correct = (valid_probs.argmax(dim=-1) == valid_sequences.argmax(dim=-1)).to(dtype=torch.float32)
         sep_correct = separate(correct, torch.sum(mask, dim=-1))
         recovery_rates = (sep_correct.sum(dim=-1) / torch.sum(mask, dim=-1)).tolist()

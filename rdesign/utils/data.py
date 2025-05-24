@@ -222,3 +222,16 @@ def draw_recovery_scatter(recovery_path: str, output_path: str=f'{DATA_PATH}reco
     plt.ylabel('Recovery Rate')
     plt.savefig(output_path)
     print(f"Scatter plot saved at {output_path}")
+
+def separate(concat: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+    batch_size = lengths.shape[0]
+    max_length = int(lengths.max().item())
+    separated = torch.zeros((batch_size, max_length), dtype=concat.dtype)
+
+    start_idx = 0
+    for i, length in enumerate(lengths):
+        end_idx = start_idx + int(length.item())
+        separated[i, :int(length.item())] = concat[start_idx:end_idx]
+        start_idx = end_idx
+
+    return separated
