@@ -65,17 +65,16 @@ from rdesign.utils.train import get_trainer
 from rdesign.config.seeds import seeding
 
 seeding()
-model = RNAModel.load_from_checkpoint('out/checkpoints/RDesign-X/Final-V0.ckpt')
-model.xgb_readout = xgb.XGBClassifier(objective='multi:softmax',
-                                    num_class=4,
-                                    n_estimators=180,
-                                    xgb_max_depth=8,
-                                    xgb_learning_rate=0.1,
-                                    xgb_subsample=0.9,
-                                    xgb_colsample_bytree=0.8,
-                                    random_state=42,
-                                    n_jobs=8)
-
-data = RNADataModule.from_defaults(batch_size=32, split_ratio=[0.95, 0.05, 0.0])
-trainer = get_trainer(name='RDesign-X', version=2, max_epochs=0)
+model = RNAModel()
+# model.xgb_readout = xgb.XGBClassifier(objective='multi:softmax',
+#                                     num_class=4,
+#                                     n_estimators=180,
+#                                     xgb_max_depth=8,
+#                                     xgb_learning_rate=0.1,
+#                                     xgb_subsample=0.9,
+#                                     xgb_colsample_bytree=0.8,
+#                                     random_state=42,
+#                                     n_jobs=8)
+data = RNADataModule.from_defaults(batch_size=32, split_ratio=[0.9, 0.1, 0.0])
+trainer = get_trainer(name='RDesign-X', version=3, max_epochs=230, train_xgb=True)
 trainer.fit(model, data)

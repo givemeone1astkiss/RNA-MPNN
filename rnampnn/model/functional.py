@@ -2,7 +2,6 @@ import torch
 from torch import nn
 from ..config.glob import SEPS, NUM_RES_TYPES
 import math
-import xgboost as xgb
 
 
 class GraphNormalization(nn.Module):

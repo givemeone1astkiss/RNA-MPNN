@@ -226,7 +226,10 @@ def draw_recovery_scatter(recovery_path: str, output_path: str=f'{DATA_PATH}reco
 def separate(concat: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
     batch_size = lengths.shape[0]
     max_length = int(lengths.max().item())
-    separated = torch.zeros((batch_size, max_length), dtype=concat.dtype)
+    if len(concat.shape) == 1:
+        separated = torch.zeros((batch_size, max_length), dtype=concat.dtype)
+    if len(concat.shape) == 2:
+        separated = torch.zeros((batch_size, max_length, concat.shape[1]), dtype=concat.dtype)
 
     start_idx = 0
     for i, length in enumerate(lengths):
@@ -235,3 +238,28 @@ def separate(concat: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         start_idx = end_idx
 
     return separated
+
+def concat(separated: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+    batch_size = lengths.shape[0]
+    max_length = int(lengths.max().item())
+    if len(separated.shape) == 2:
+        concatenated = torch.zeros((batch_size, max_length), dtype=separated.dtype)
+    if len(separated.shape) == 3:
+        concatenated = torch.zeros((batch_size, max_length, separated.shape[2]), dtype=separated.dtype)
+
+    start_idx = 0
+    for i, length in enumerate(lengths):
+        end_idx = start_idx + int(length.item())
+        concatenated[start_idx:end_idx] = separated[i, :int(length.item())]
+        start_idx = end_idx
+
+    return concatenated
+
+
+def gen_mask(lengths: torch.Tensor) -> torch.Tensor:
+    batch_size = lengths.shape[0]
+    max_length = int(lengths.max().item())
+    mask = torch.zeros((batch_size, max_length), dtype=torch.float32)
+    for i, length in enumerate(lengths):
+        mask[i, :int(length.item())] = 1.0
+    return mask

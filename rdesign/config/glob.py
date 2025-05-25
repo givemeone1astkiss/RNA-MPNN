@@ -23,7 +23,10 @@ SPLIT_RATIO: list = [0.9, 0.1, 0.0]
 COMPETITION_DATA: str = '/saisdata/'
 COMPETITION_OUT: str = '/saisresult/'
 
-BEST_CKPT: str = 'out/checkpoints/RDesign-X/Final-V1.ckpt'
+BEST_CKPT: str = 'out/checkpoints/RDesign-X/Final-V6.ckpt'
 
 NUM_RES_TYPES: int = 4
 DEFAULT_SEED: int = 42
+
+LEPS = 1e6
+SEPS = 1e-6

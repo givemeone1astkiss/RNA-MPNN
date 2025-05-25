@@ -1,0 +1,22 @@
+dim_dense_layers: 256
+dropout: 0.1
+edge_feat_types:
+- orientation
+- distance
+- direction
+hidden_dim: 128
+k_neighbors: 25
+lr: 0.0015
+n_estimators: 100
+node_feat_types:
+- angle
+- distance
+- direction
+num_dense_layers: 3
+num_message_layers: 3
+num_mpnn_layers: 9
+vocab_size: 4
+xgb_colsample_bytree: 0.8
+xgb_learning_rate: 0.1
+xgb_max_depth: 6
+xgb_subsample: 0.8

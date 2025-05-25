@@ -1,6 +1,5 @@
 import pytorch_lightning as pl
 import numpy as np
-
 from ..config.glob import OUTPUT_PATH
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning import Callback
@@ -82,13 +81,14 @@ class XGBTrainer(Callback):
             X = X.to(model.device)
             S = S.to(model.device)
             mask = mask.to(model.device)
-            h_V, S = model(X, S, mask)
+            h_V, S = model(X, S, mask, is_predict=True)
             embeddings = np.append(embeddings, h_V.to(device=torch.device(torch.device('cpu'))).detach().numpy(), axis=0)
             sequences = np.append(sequences, S.to(device=torch.device(torch.device('cpu'))).detach().numpy(), axis=0)
-
+            del X, S, mask, lengths, h_V
+            torch.cuda.empty_cache()
         return embeddings, sequences
 
-def get_trainer(name: str, version: int, max_epochs: int=30, val_check_interval: int = 1):
+def get_trainer(name: str, version: int, max_epochs: int=30, val_check_interval: int = 1, train_xgb: bool = False):
     logger = pl.loggers.TensorBoardLogger(
         save_dir=f"{OUTPUT_PATH}logs",
         name=name,
@@ -107,11 +107,10 @@ def get_trainer(name: str, version: int, max_epochs: int=30, val_check_interval:
     return pl.Trainer(
         accelerator="auto",
         devices=-1 if torch.cuda.is_available() else 1,
-        precision="bf16-mixed",
         max_epochs=max_epochs,
         enable_progress_bar=True,
         logger=logger,
-        callbacks=[checkpoint, LossMonitor(), XGBTrainer(), NameModel(name, version)],
+        callbacks=[checkpoint, LossMonitor(), NameModel(name, version), XGBTrainer()] if train_xgb else [checkpoint, LossMonitor(), NameModel(name, version)],
         check_val_every_n_epoch=val_check_interval
     )
 
