@@ -163,93 +163,11 @@ RNA-MPNN/
 └── README.md                  # This file
 ```
 
-## 🧪 Testing
-
-### Run Tests
-
-```bash
-python test.py
-```
-
-### Test Individual Components
-
-```python
-# Test feature extraction
-python -c "from rnampnn.model.feature import ResFeature; print('Feature extraction test passed')"
-
-# Test model loading
-python -c "from rnampnn.model.rnampnn import RNAMPNN; print('Model loading test passed')"
-```
-
-## 📈 Performance
-
-### Model Performance
-
-- **Accuracy**: State-of-the-art performance on RNA sequence prediction
-- **Speed**: Fast inference with GPU acceleration
-- **Memory**: Efficient memory usage with batch processing
-- **Scalability**: Supports sequences up to 4,500 nucleotides
-
-### Benchmark Results
-
-| Model | Parameters | Accuracy | Speed (ms/seq) | Memory (GB) |
-|-------|------------|----------|----------------|-------------|
-| RNAMPNN-X | 1.39M | 95.2% | 120 | 2.1 |
-| RDesign-X | 2.55M | 94.8% | 85 | 1.8 |
-
-## 🔬 Research
-
-### Publications
-
-- **Paper**: [RNA-MPNN: Graph Neural Networks for RNA Sequence Prediction](link-to-paper)
-- **Competition**: 3rd World Science Intelligence Competition
-- **Track**: Innovative Pharmaceutical Track: RNA Refolding and Functional Nucleic Acid Design
-
-### Citation
-
-```bibtex
-@article{rnampnn2024,
-  title={RNA-MPNN: Graph Neural Networks for RNA Sequence Prediction from 3D Structure},
-  author={RNA-MPNN Team},
-  journal={arXiv preprint},
-  year={2024}
-}
-```
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our contributing guidelines:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
-
-### Development Setup
-
-```bash
-# Install development dependencies
-pip install -e ".[dev]"
-
-# Run linting
-flake8 rnampnn/
-
-# Run tests
-pytest tests/
-```
-
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🆘 Support
-
-### Documentation
-
-- [API Documentation](docs/api.md)
-- [User Guide](docs/user_guide.md)
-- [Developer Guide](docs/developer_guide.md)
 
 ### Issues
 
@@ -261,28 +179,5 @@ If you encounter any issues:
 
 ### Contact
 
-- **Email**: rnampnn@example.com
+- **Email**: realwiseking@outlook.com
 - **GitHub**: [RNA-MPNN](https://github.com/RNA-MPNN/RNA-MPNN)
-- **Discord**: [RNA-MPNN Community](https://discord.gg/rnampnn)
-
-## 🙏 Acknowledgments
-
-- 3rd World Science Intelligence Competition organizers
-- PyTorch and PyTorch Lightning teams
-- BioPython community
-- All contributors and users
-
-## 📊 Changelog
-
-### Version 1.0.0 (2024-09-24)
-
-- Initial release
-- RNAMPNN-X model implementation
-- RDesign model implementation
-- PDB file processing
-- Training and inference pipelines
-- Comprehensive testing suite
-
----
-
-**Note**: This is a research project developed for academic competition. For production use, please ensure proper validation and testing.
