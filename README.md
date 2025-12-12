@@ -163,21 +163,3 @@ RNA-MPNN/
 └── README.md                  # This file
 ```
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🆘 Support
-
-### Issues
-
-If you encounter any issues:
-
-1. Check the [FAQ](docs/faq.md)
-2. Search existing [issues](https://github.com/RNA-MPNN/RNA-MPNN/issues)
-3. Create a new issue with detailed information
-
-### Contact
-
-- **Email**: realwiseking@outlook.com
-- **GitHub**: [RNA-MPNN](https://github.com/RNA-MPNN/RNA-MPNN)
